@@ -822,7 +822,7 @@ fn draw_applied(frame: &mut Frame, area: Rect, app: &App) {
     if rows[3].height > 0 {
         let draft_note = if pending {
             format!(
-                " draft differs → Apply [a] or Validate [v]  (↓{} ↑{} loss{} dly{}±{})",
+                " draft differs → Apply [a]  (↓{} ↑{} loss{} dly{}±{})",
                 format_rate(app.download),
                 format_rate(app.upload),
                 format_loss(app.loss),
@@ -1572,22 +1572,19 @@ fn draw_actions(frame: &mut Frame, area: Rect, app: &mut App) {
     let chunks = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([
-            Constraint::Percentage(22),
-            Constraint::Percentage(22),
-            Constraint::Percentage(22),
-            Constraint::Percentage(17),
-            Constraint::Percentage(17),
+            Constraint::Percentage(25),
+            Constraint::Percentage(25),
+            Constraint::Percentage(25),
+            Constraint::Percentage(25),
         ])
         .split(area);
 
     let apply_area = pad(chunks[0], 0, 1, 0, 0);
-    let validate_area = pad(chunks[1], 0, 1, 0, 0);
-    let reset_area = pad(chunks[2], 0, 1, 0, 0);
-    let history_area = pad(chunks[3], 0, 1, 0, 0);
-    let quit_area = pad(chunks[4], 0, 0, 0, 0);
+    let reset_area = pad(chunks[1], 0, 1, 0, 0);
+    let history_area = pad(chunks[2], 0, 1, 0, 0);
+    let quit_area = pad(chunks[3], 0, 0, 0, 0);
 
     app.hit_apply = apply_area;
-    app.hit_validate = validate_area;
     app.hit_reset = reset_area;
     app.hit_history = history_area;
     app.hit_quit = quit_area;
@@ -1595,7 +1592,6 @@ fn draw_actions(frame: &mut Frame, area: Rect, app: &mut App) {
     app.hit_st_back = Rect::default();
 
     render_btn(frame, apply_area, "▶ Apply [a]", BtnStyle::Primary);
-    render_btn(frame, validate_area, "✓ Valid [v]", BtnStyle::Accent);
     render_btn(frame, reset_area, "↺ Reset [r]", BtnStyle::Danger);
     render_btn(frame, history_area, "Hist [h]", BtnStyle::Ghost);
     render_btn(frame, quit_area, "✕ Quit [q]", BtnStyle::Ghost);
@@ -1629,8 +1625,6 @@ fn draw_keys_main(frame: &mut Frame, area: Rect) {
     let line = Line::from(vec![
         key("a"),
         dim(" apply  "),
-        key("v"),
-        dim(" valid  "),
         key("t"),
         dim(" speed  "),
         key("h"),
@@ -1660,7 +1654,7 @@ fn draw_history_screen(frame: &mut Frame, area: Rect, app: &App) {
 
     if app.speed_history.is_empty() {
         frame.render_widget(
-            Paragraph::new("\n  No history yet. Run a speed test or Validate.")
+            Paragraph::new("\n  No history yet. Run a Cloudflare speed test [t].")
                 .style(Style::default().fg(theme::TEXT_MUTED).bg(theme::SURFACE)),
             inner,
         );

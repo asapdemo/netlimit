@@ -83,7 +83,6 @@ pub struct App {
     pub hit_apply: Rect,
     pub hit_reset: Rect,
     pub hit_quit: Rect,
-    pub hit_validate: Rect,
     pub hit_history: Rect,
     /// Open full-screen speed test (on main ping panel).
     pub hit_open_speedtest: Rect,
@@ -123,8 +122,6 @@ pub struct App {
     pub st_down_samples: Vec<f64>,
     pub st_up_samples: Vec<f64>,
     pub st_lat_samples: Vec<f64>,
-    /// After apply, auto-run speed test and label result as validation.
-    pub validate_mode: bool,
     pub speed_history: Vec<crate::history::HistoryEntry>,
     speedtest_rx: Option<Receiver<SpeedTestEvent>>,
     last_sample_at: Instant,
@@ -185,7 +182,6 @@ impl App {
             hit_apply: Rect::default(),
             hit_reset: Rect::default(),
             hit_quit: Rect::default(),
-            hit_validate: Rect::default(),
             hit_history: Rect::default(),
             hit_open_speedtest: Rect::default(),
             hit_st_run: Rect::default(),
@@ -215,7 +211,6 @@ impl App {
             st_down_samples: Vec::new(),
             st_up_samples: Vec::new(),
             st_lat_samples: Vec::new(),
-            validate_mode: false,
             speed_history: crate::history::load_history(),
             speedtest_rx: None,
             last_sample_at: Instant::now(),
@@ -393,24 +388,6 @@ impl App {
                         self.speed_history = crate::history::load_history();
                     }
 
-                    if self.validate_mode {
-                        self.validate_mode = false;
-                        let lim = &self.applied;
-                        self.set_banner(
-                            format!(
-                                "✓ Validated under limits: CF ↓ {:.1} / ↑ {:.1} Mbps  lat {:.0}ms  ·  limits ↓ {} ↑ {} loss {} delay {}±{}ms",
-                                result.download_mbps,
-                                result.upload_mbps,
-                                result.latency_ms,
-                                crate::tc::format_rate(lim.download_mbps),
-                                crate::tc::format_rate(lim.upload_mbps),
-                                crate::tc::format_loss(lim.loss_percent),
-                                crate::tc::format_ms(lim.delay_ms),
-                                crate::tc::format_ms(lim.jitter_ms),
-                            ),
-                            BannerLevel::Success,
-                        );
-                    }
                     return;
                 }
                 SpeedTestEvent::Failed(err) => {
@@ -639,7 +616,6 @@ impl App {
             KeyCode::Char('y') => self.selected = Metric::Delay,
             KeyCode::Char('j') => self.selected = Metric::Jitter,
             KeyCode::Char('s') => self.save_current_as_preset(),
-            KeyCode::Char('v') => self.do_validate(),
             KeyCode::Char('h') => self.open_history(),
             KeyCode::Char('x') | KeyCode::Delete | KeyCode::Backspace => {
                 self.delete_selected_preset();
@@ -755,8 +731,6 @@ impl App {
                     self.open_speedtest_screen();
                 } else if contains(self.hit_apply, col, row) {
                     self.do_apply();
-                } else if contains(self.hit_validate, col, row) {
-                    self.do_validate();
                 } else if contains(self.hit_history, col, row) {
                     self.open_history();
                 } else if contains(self.hit_reset, col, row) {
@@ -1076,28 +1050,6 @@ impl App {
         let same_iface = draft.interface == a.interface
             || (a.interface.is_empty() && draft.interface == self.current_iface());
         !(same_dl && same_ul && same_loss && same_delay && same_jitter && same_iface)
-    }
-
-    fn do_validate(&mut self) {
-        if !self.is_root {
-            self.set_banner(
-                "Validate needs root to apply limits first",
-                BannerLevel::Error,
-            );
-            return;
-        }
-        if !self.do_apply() {
-            return;
-        }
-        self.validate_mode = true;
-        let saved = self.speedtest_duration_secs;
-        self.speedtest_duration_secs = 5;
-        self.set_banner(
-            "Validating… Cloudflare test under applied limits (5s/phase)",
-            BannerLevel::Info,
-        );
-        self.start_speedtest_scope(TestScope::Full);
-        self.speedtest_duration_secs = saved;
     }
 
     fn open_history(&mut self) {

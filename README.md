@@ -11,8 +11,7 @@ Built with **Rust** + **ratatui**. Limits download, upload, and packet loss via 
 - Full interface list (click to select)
 - Keyboard + mouse (`−`/`+`, sliders, buttons)
 - **Presets:** No limits, 4G, 3G, Starlink (+ custom save/delete)
-- **Validate [v]** — apply limits then auto Cloudflare test; show result vs limits
-- **Path quality** — live ICMP loss sparkline + RTT
+- **Path quality** — live ICMP loss + latency graphs
 - **Cloudflare speed test** — full-screen graphs, per-phase re-run, duration
 - **History [h]** — last speed tests on disk
 - Single binary: `netlimit`
@@ -21,9 +20,53 @@ Built with **Rust** + **ratatui**. Limits download, upload, and packet loss via 
 
 - Linux + `iproute2` (`tc`, `ip`)
 - Root for Apply / Reset
-- Rust 1.74+ (to build)
+- Rust 1.74+ (only if building from source)
 
-## Build & run
+## Install (prebuilt binaries)
+
+GitHub Actions builds release archives for:
+
+| Archive | Use on |
+|---------|--------|
+| `netlimit-linux-x86_64.tar.gz` | **Arch Linux**, Ubuntu/Debian/Fedora x86_64, most PCs/servers |
+| `netlimit-linux-aarch64.tar.gz` | **Raspberry Pi** (64-bit OS), other ARM64 Linux |
+
+### Arch Linux (x86_64)
+
+```bash
+# From a GitHub Release asset (replace VERSION / URL as needed)
+curl -LO https://github.com/virtuoz-afk/netlimit/releases/latest/download/netlimit-linux-x86_64.tar.gz
+tar -xzf netlimit-linux-x86_64.tar.gz
+sudo install -m 755 netlimit-linux-x86_64/netlimit /usr/local/bin/netlimit
+sudo pacman -S --needed iproute2
+sudo netlimit
+```
+
+### Raspberry Pi (aarch64, 64-bit OS)
+
+```bash
+curl -LO https://github.com/virtuoz-afk/netlimit/releases/latest/download/netlimit-linux-aarch64.tar.gz
+tar -xzf netlimit-linux-aarch64.tar.gz
+sudo install -m 755 netlimit-linux-aarch64/netlimit /usr/local/bin/netlimit
+sudo apt update && sudo apt install -y iproute2
+sudo netlimit
+```
+
+> Use the **aarch64** build on 64-bit Raspberry Pi OS. 32-bit Pi OS is not built by default.
+
+### How releases are produced
+
+Push a version tag to trigger packaging and a GitHub Release:
+
+```bash
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+Workflow: [`.github/workflows/release.yml`](.github/workflows/release.yml)  
+(also runs on PRs / pushes for CI artifacts; manual **workflow_dispatch** can create a release.)
+
+## Build from source
 
 ```bash
 cargo build --release
@@ -77,7 +120,6 @@ Loading only fills the draft — press **Apply** to enforce.
 | `s` | Save custom preset |
 | `x` / `Del` | Delete selected custom preset |
 | `a` | Apply |
-| `v` | Validate (apply + speed test) |
 | `r` | Reset |
 | `t` | Speed test screen |
 | `h` | History |

@@ -1,0 +1,131 @@
+# Build Linux release binaries:
+#   - x86_64  → Arch Linux, desktop/server Linux
+#   - aarch64 → Raspberry Pi (64-bit OS) and other ARM64 Linux
+#
+# Artifacts are uploaded on every run. A GitHub Release is created when you
+# push a version tag (v0.1.0, v1.2.3, …) or run this workflow manually with
+# create_release=true.
+
+name: Build & release
+
+on:
+  push:
+    branches: [main, master, rust_version]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      create_release:
+        description: "Create a GitHub Release from this run"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Arch Linux and other x86_64 GNU/Linux distros
+          - name: linux-x86_64
+            os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            archive: netlimit-linux-x86_64
+
+          # Raspberry Pi 3/4/5 with 64-bit Raspberry Pi OS / Debian / Ubuntu ARM
+          - name: linux-aarch64
+            os: ubuntu-22.04-arm
+            target: aarch64-unknown-linux-gnu
+            archive: netlimit-linux-aarch64
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential \
+            cmake \
+            pkg-config \
+            libclang-dev
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Build release
+        run: cargo build --release --locked --target ${{ matrix.target }}
+
+      - name: Package
+        run: |
+          set -euo pipefail
+          BIN="target/${{ matrix.target }}/release/netlimit"
+          strip "$BIN" || true
+          STAGE="dist/${{ matrix.archive }}"
+          mkdir -p "$STAGE"
+          cp "$BIN" "$STAGE/netlimit"
+          cp README.md "$STAGE/"
+          if [ -f LICENSE ]; then cp LICENSE "$STAGE/"; fi
+          if [ -f LICENSE-MIT ]; then cp LICENSE-MIT "$STAGE/"; fi
+          (
+            cd dist
+            tar -czf "${{ matrix.archive }}.tar.gz" "${{ matrix.archive }}"
+            sha256sum "${{ matrix.archive }}.tar.gz" > "${{ matrix.archive }}.tar.gz.sha256"
+          )
+          ls -lh dist/
+          file "$STAGE/netlimit"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.archive }}
+          path: |
+            dist/${{ matrix.archive }}.tar.gz
+            dist/${{ matrix.archive }}.tar.gz.sha256
+          if-no-files-found: error
+          retention-days: 30
+
+  release:
+    name: GitHub Release
+    needs: build
+    if: >
+      startsWith(github.ref, 'refs/tags/v') ||
+      (github.event_name == 'workflow_dispatch' && inputs.create_release)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: List release files
+        run: find artifacts -type f | sort && ls -lh artifacts/
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          # On workflow_dispatch without a tag, softprops uses the run ref;
+          # prefer tagging (git tag v0.1.0 && git push --tags) for real releases.
+          generate_release_notes: true
+          files: |
+            artifacts/*.tar.gz
+            artifacts/*.sha256
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
