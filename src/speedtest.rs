@@ -1,6 +1,8 @@
 //! Cloudflare HTTP speed test (same endpoints as speed.cloudflare.com).
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -61,6 +63,8 @@ pub enum SpeedTestEvent {
         /// Per-phase duration setting (not total wall time).
         duration_secs: u32,
     },
+    /// User requested stop. Partial samples already sent remain valid.
+    Cancelled,
     Failed(String),
 }
 
@@ -78,32 +82,68 @@ pub struct SpeedTestResult {
     pub at: Option<Instant>,
 }
 
+/// Error used inside the worker to distinguish cancel from failure.
+enum RunError {
+    Cancelled,
+    Failed(String),
+}
+
+impl From<String> for RunError {
+    fn from(s: String) -> Self {
+        RunError::Failed(s)
+    }
+}
+
 /// Spawn Cloudflare speed test on a background thread.
+///
+/// Returns `(events, cancel)`. Set `cancel` to true to stop between probes
+/// (in-flight HTTP requests finish first).
 ///
 /// `duration_secs` is the wall-clock budget **for each phase** that runs
 /// (latency, download, upload). A full test ≈ 3 × duration_secs.
-pub fn start(duration_secs: u32, scope: TestScope) -> Receiver<SpeedTestEvent> {
+pub fn start(duration_secs: u32, scope: TestScope) -> (Receiver<SpeedTestEvent>, Arc<AtomicBool>) {
     let duration_secs = duration_secs.clamp(1, 120);
     let (tx, rx) = mpsc::channel();
+    let cancel = Arc::new(AtomicBool::new(false));
+    let cancel_worker = Arc::clone(&cancel);
     thread::spawn(move || {
-        if let Err(e) = run_test(&tx, duration_secs, scope) {
-            let _ = tx.send(SpeedTestEvent::Failed(e));
+        match run_test(&tx, duration_secs, scope, &cancel_worker) {
+            Ok(()) => {}
+            Err(RunError::Cancelled) => {
+                let _ = tx.send(SpeedTestEvent::Cancelled);
+            }
+            Err(RunError::Failed(e)) => {
+                let _ = tx.send(SpeedTestEvent::Failed(e));
+            }
         }
     });
-    rx
+    (rx, cancel)
+}
+
+fn is_cancelled(cancel: &AtomicBool) -> bool {
+    cancel.load(Ordering::Relaxed)
+}
+
+fn check_cancel(cancel: &AtomicBool) -> Result<(), RunError> {
+    if is_cancelled(cancel) {
+        Err(RunError::Cancelled)
+    } else {
+        Ok(())
+    }
 }
 
 fn run_test(
     tx: &Sender<SpeedTestEvent>,
     duration_secs: u32,
     scope: TestScope,
-) -> Result<(), String> {
+    cancel: &AtomicBool,
+) -> Result<(), RunError> {
     let client = Client::builder()
         .timeout(Duration::from_secs(120))
         .connect_timeout(Duration::from_secs(10))
         .pool_max_idle_per_host(4)
         .build()
-        .map_err(|e| format!("http client: {e}"))?;
+        .map_err(|e| RunError::Failed(format!("http client: {e}")))?;
 
     let phase_budget = Duration::from_secs(duration_secs as u64);
 
@@ -114,20 +154,25 @@ fn run_test(
 
     // ── Latency ─────────────────────────────────────────────────────
     if matches!(scope, TestScope::Full | TestScope::Latency) {
-        let (lat, jit) = run_latency_phase(tx, &client, phase_budget)?;
+        check_cancel(cancel)?;
+        let (lat, jit) = run_latency_phase(tx, &client, phase_budget, cancel)?;
         latency_ms = Some(lat);
         jitter_ms = Some(jit);
     }
 
     // ── Download ────────────────────────────────────────────────────
     if matches!(scope, TestScope::Full | TestScope::Download) {
-        download_mbps = Some(run_download_phase(tx, &client, phase_budget)?);
+        check_cancel(cancel)?;
+        download_mbps = Some(run_download_phase(tx, &client, phase_budget, cancel)?);
     }
 
     // ── Upload ──────────────────────────────────────────────────────
     if matches!(scope, TestScope::Full | TestScope::Upload) {
-        upload_mbps = Some(run_upload_phase(tx, &client, phase_budget)?);
+        check_cancel(cancel)?;
+        upload_mbps = Some(run_upload_phase(tx, &client, phase_budget, cancel)?);
     }
+
+    check_cancel(cancel)?;
 
     let _ = tx.send(SpeedTestEvent::Finished {
         scope,
@@ -144,7 +189,8 @@ fn run_latency_phase(
     tx: &Sender<SpeedTestEvent>,
     client: &Client,
     budget: Duration,
-) -> Result<(f64, f64), String> {
+    cancel: &AtomicBool,
+) -> Result<(f64, f64), RunError> {
     let _ = tx.send(SpeedTestEvent::Progress {
         phase: "latency".into(),
         detail: format!("measuring RTT for {}s…", budget.as_secs()),
@@ -158,6 +204,7 @@ fn run_latency_phase(
 
     // Run for the full phase budget (at least 4 samples if possible).
     while Instant::now() < deadline || rtts.len() < 4 {
+        check_cancel(cancel)?;
         if Instant::now() >= deadline && rtts.len() >= 4 {
             break;
         }
@@ -181,14 +228,20 @@ fn run_latency_phase(
                 });
             }
             Err(e) if rtts.is_empty() && i >= 5 => {
-                return Err(format!("latency probe failed: {e}"));
+                return Err(RunError::Failed(format!("latency probe failed: {e}")));
             }
             Err(_) => {}
         }
-        thread::sleep(Duration::from_millis(20));
+        // Short sleep, but wake early if cancelled.
+        for _ in 0..4 {
+            check_cancel(cancel)?;
+            thread::sleep(Duration::from_millis(5));
+        }
     }
     if rtts.is_empty() {
-        return Err("could not measure latency to Cloudflare".into());
+        return Err(RunError::Failed(
+            "could not measure latency to Cloudflare".into(),
+        ));
     }
 
     let _ = tx.send(SpeedTestEvent::Progress {
@@ -214,7 +267,8 @@ fn run_download_phase(
     tx: &Sender<SpeedTestEvent>,
     client: &Client,
     budget: Duration,
-) -> Result<f64, String> {
+    cancel: &AtomicBool,
+) -> Result<f64, RunError> {
     let pool: &[u64] = &[
         256_000, 512_000, 1_000_000, 2_000_000, 5_000_000, 10_000_000,
     ];
@@ -224,6 +278,7 @@ fn run_download_phase(
     let mut step = 0usize;
 
     while Instant::now() < deadline || rates.len() < 3 {
+        check_cancel(cancel)?;
         if Instant::now() >= deadline && rates.len() >= 3 {
             break;
         }
@@ -259,14 +314,14 @@ fn run_download_phase(
                     phase_progress: frac,
                 });
                 if rates.is_empty() && step >= 4 {
-                    return Err(format!("download probes failed: {e}"));
+                    return Err(RunError::Failed(format!("download probes failed: {e}")));
                 }
             }
         }
         step += 1;
     }
     if rates.is_empty() {
-        return Err("all download probes failed".into());
+        return Err(RunError::Failed("all download probes failed".into()));
     }
     let _ = tx.send(SpeedTestEvent::Progress {
         phase: "download".into(),
@@ -280,7 +335,8 @@ fn run_upload_phase(
     tx: &Sender<SpeedTestEvent>,
     client: &Client,
     budget: Duration,
-) -> Result<f64, String> {
+    cancel: &AtomicBool,
+) -> Result<f64, RunError> {
     let pool: &[usize] = &[256_000, 512_000, 1_000_000, 2_000_000, 5_000_000];
     let mut rates = Vec::new();
     let start = Instant::now();
@@ -288,6 +344,7 @@ fn run_upload_phase(
     let mut step = 0usize;
 
     while Instant::now() < deadline || rates.len() < 3 {
+        check_cancel(cancel)?;
         if Instant::now() >= deadline && rates.len() >= 3 {
             break;
         }
@@ -323,14 +380,14 @@ fn run_upload_phase(
                     phase_progress: frac,
                 });
                 if rates.is_empty() && step >= 4 {
-                    return Err(format!("upload probes failed: {e}"));
+                    return Err(RunError::Failed(format!("upload probes failed: {e}")));
                 }
             }
         }
         step += 1;
     }
     if rates.is_empty() {
-        return Err("all upload probes failed".into());
+        return Err(RunError::Failed("all upload probes failed".into()));
     }
     let _ = tx.send(SpeedTestEvent::Progress {
         phase: "upload".into(),

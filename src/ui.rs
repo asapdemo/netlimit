@@ -585,8 +585,8 @@ fn render_btn(frame: &mut Frame, area: Rect, label: &str, style: BtnStyle) {
             true,
         ),
         BtnStyle::Danger => (
+            theme::TEXT_INVERSE,
             theme::ERROR,
-            theme::BTN_DANGER_BG,
             theme::BTN_DANGER_BORDER,
             true,
         ),
@@ -942,7 +942,7 @@ fn draw_ping_panel(frame: &mut Frame, area: Rect, app: &mut App) {
     app.hit_open_speedtest = btn;
     let (label, style) = if app.speedtest_running {
         (
-            "⚡  Speed test running…  [t] open",
+            "⚡  Speed test in progress…  [t] open to stop",
             BtnStyle::Chip {
                 fg: theme::WARN,
                 active: true,
@@ -1043,7 +1043,7 @@ fn draw_speedtest_screen(frame: &mut Frame, area: Rect, app: &mut App) {
                 .add_modifier(Modifier::BOLD),
         ))
         .title_bottom(Span::styled(
-            " Esc/b back  ·  Enter run all  ·  ←→ sec/phase  ·  ↺ under graph re-runs that test ",
+            " Esc/b back  ·  Enter run/stop  ·  s stop  ·  ←→ sec/phase  ·  ↺ re-run phase ",
             Style::default().fg(theme::TEXT_MUTED),
         ));
     let inner = block.inner(area);
@@ -1074,7 +1074,7 @@ fn draw_speedtest_screen(frame: &mut Frame, area: Rect, app: &mut App) {
             Constraint::Length(5),
             Constraint::Length(16), // "~15s total"
             Constraint::Length(2),
-            Constraint::Length(14),
+            Constraint::Length(16), // Run all / STOP
             Constraint::Length(2),
             Constraint::Length(10),
             Constraint::Min(0),
@@ -1137,16 +1137,8 @@ fn draw_speedtest_screen(frame: &mut Frame, area: Rect, app: &mut App) {
     app.hit_st_run = ctrl[6];
     app.hit_st_back = ctrl[8];
     if app.speedtest_running {
-        render_btn(
-            frame,
-            ctrl[6],
-            "… Running",
-            BtnStyle::Chip {
-                fg: theme::WARN,
-                active: true,
-                danger: false,
-            },
-        );
+        // Filled red STOP — replaces the old inert "… Running" chip.
+        render_btn(frame, ctrl[6], "■ STOP [s]", BtnStyle::Danger);
     } else {
         render_btn(frame, ctrl[6], "▶  Run all", BtnStyle::Primary);
     }
@@ -1157,6 +1149,8 @@ fn draw_speedtest_screen(frame: &mut Frame, area: Rect, app: &mut App) {
         format!(" {} — {} ", app.speedtest_phase, app.speedtest_detail)
     } else if let Some(err) = &app.speedtest_error {
         format!(" ✗ {err} ")
+    } else if app.speedtest_phase == "stopped" {
+        " stopped — partial samples kept · Run all to retry ".into()
     } else if app.last_speedtest.is_some() {
         " complete — Run all or ↺ under a graph ".into()
     } else {

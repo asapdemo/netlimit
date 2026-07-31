@@ -1,5 +1,8 @@
 //! Application state and event handling.
 
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::Receiver;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crossterm::event::{
@@ -8,8 +11,6 @@ use crossterm::event::{
 };
 use ratatui::layout::Rect;
 use ratatui::DefaultTerminal;
-
-use std::sync::mpsc::Receiver;
 
 use crate::monitor::{PingMonitor, SampleHistory, ThroughputMonitor};
 use crate::netinfo::list_interfaces;
@@ -124,6 +125,8 @@ pub struct App {
     pub st_lat_samples: Vec<f64>,
     pub speed_history: Vec<crate::history::HistoryEntry>,
     speedtest_rx: Option<Receiver<SpeedTestEvent>>,
+    /// Set by Stop; worker checks between probes.
+    speedtest_cancel: Option<Arc<AtomicBool>>,
     last_sample_at: Instant,
     tick: u64,
 }
@@ -213,6 +216,7 @@ impl App {
             st_lat_samples: Vec::new(),
             speed_history: crate::history::load_history(),
             speedtest_rx: None,
+            speedtest_cancel: None,
             last_sample_at: Instant::now(),
             tick: 0,
         };
@@ -289,6 +293,7 @@ impl App {
                         if self.speedtest_running {
                             self.speedtest_running = false;
                             self.speedtest_rx = None;
+                            self.speedtest_cancel = None;
                             self.set_banner(
                                 "Speed test worker ended unexpectedly",
                                 BannerLevel::Error,
@@ -330,6 +335,7 @@ impl App {
                 } => {
                     self.speedtest_running = false;
                     self.speedtest_rx = None;
+                    self.speedtest_cancel = None;
                     self.speedtest_phase = "done".into();
                     self.speedtest_detail = format!("{} complete", scope.label());
                     self.speedtest_error = None;
@@ -390,9 +396,14 @@ impl App {
 
                     return;
                 }
+                SpeedTestEvent::Cancelled => {
+                    self.finish_speedtest_cancelled();
+                    return;
+                }
                 SpeedTestEvent::Failed(err) => {
                     self.speedtest_running = false;
                     self.speedtest_rx = None;
+                    self.speedtest_cancel = None;
                     self.speedtest_phase = "error".into();
                     self.speedtest_detail = err.clone();
                     self.speedtest_error = Some(err);
@@ -400,6 +411,57 @@ impl App {
                 }
             }
         }
+    }
+
+    fn finish_speedtest_cancelled(&mut self) {
+        self.speedtest_running = false;
+        self.speedtest_rx = None;
+        self.speedtest_cancel = None;
+        self.speedtest_phase = "stopped".into();
+        self.speedtest_detail = "stopped by user".into();
+        self.speedtest_error = None;
+
+        // Keep whatever samples we already collected as a partial result.
+        let has_any = !self.st_down_samples.is_empty()
+            || !self.st_up_samples.is_empty()
+            || !self.st_lat_samples.is_empty();
+        if has_any {
+            let mut result = self.last_speedtest.take().unwrap_or_default();
+            result.duration_secs = self.speedtest_duration_secs;
+            result.at = Some(Instant::now());
+            if !self.st_down_samples.is_empty() {
+                result.download_mbps = self
+                    .st_down_samples
+                    .iter()
+                    .copied()
+                    .fold(0.0_f64, |a, b| if b > a { b } else { a });
+                result.down_samples = self.st_down_samples.clone();
+            }
+            if !self.st_up_samples.is_empty() {
+                result.upload_mbps = self
+                    .st_up_samples
+                    .iter()
+                    .copied()
+                    .fold(0.0_f64, |a, b| if b > a { b } else { a });
+                result.up_samples = self.st_up_samples.clone();
+            }
+            if !self.st_lat_samples.is_empty() {
+                let mut sorted = self.st_lat_samples.clone();
+                sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+                let mid = sorted.len() / 2;
+                result.latency_ms = sorted[mid];
+                if sorted.len() >= 2 {
+                    let mean = sorted.iter().sum::<f64>() / sorted.len() as f64;
+                    let var =
+                        sorted.iter().map(|x| (x - mean).powi(2)).sum::<f64>() / sorted.len() as f64;
+                    result.jitter_ms = var.sqrt();
+                }
+                result.lat_samples = self.st_lat_samples.clone();
+            }
+            self.last_speedtest = Some(result);
+        }
+
+        self.set_banner("Speed test stopped", BannerLevel::Warn);
     }
 
     pub fn open_speedtest_screen(&mut self) {
@@ -459,7 +521,20 @@ impl App {
             }
         }
 
-        self.speedtest_rx = Some(speedtest::start(self.speedtest_duration_secs, scope));
+        let (rx, cancel) = speedtest::start(self.speedtest_duration_secs, scope);
+        self.speedtest_rx = Some(rx);
+        self.speedtest_cancel = Some(cancel);
+    }
+
+    /// Request the background speed-test worker to stop between probes.
+    fn stop_speedtest(&mut self) {
+        if !self.speedtest_running {
+            return;
+        }
+        if let Some(flag) = &self.speedtest_cancel {
+            flag.store(true, Ordering::Relaxed);
+        }
+        self.speedtest_detail = "stopping…".into();
     }
 
     fn adjust_speedtest_duration(&mut self, delta: i32) {
@@ -579,15 +654,32 @@ impl App {
         let coarse = key.modifiers.contains(KeyModifiers::SHIFT);
         let step = if coarse { 5 } else { 1 };
         match key.code {
-            KeyCode::Esc | KeyCode::Char('b') => self.close_speedtest_screen(),
+            KeyCode::Esc | KeyCode::Char('b') => {
+                if self.speedtest_running {
+                    self.stop_speedtest();
+                } else {
+                    self.close_speedtest_screen();
+                }
+            }
             KeyCode::Char('q') => {
                 if self.speedtest_running {
-                    self.close_speedtest_screen();
+                    self.stop_speedtest();
                 } else {
                     self.should_quit = true;
                 }
             }
-            KeyCode::Enter | KeyCode::Char('t') | KeyCode::Char(' ') => self.start_speedtest(),
+            KeyCode::Char('s') => {
+                if self.speedtest_running {
+                    self.stop_speedtest();
+                }
+            }
+            KeyCode::Enter | KeyCode::Char('t') | KeyCode::Char(' ') => {
+                if self.speedtest_running {
+                    self.stop_speedtest();
+                } else {
+                    self.start_speedtest();
+                }
+            }
             KeyCode::Left | KeyCode::Char('-') | KeyCode::Char('_') => {
                 self.adjust_speedtest_duration(-step);
             }
@@ -660,8 +752,15 @@ impl App {
         if self.screen == Screen::SpeedTest {
             if mouse.kind == MouseEventKind::Down(MouseButton::Left) {
                 if contains(self.hit_st_run, col, row) {
-                    self.start_speedtest();
+                    if self.speedtest_running {
+                        self.stop_speedtest();
+                    } else {
+                        self.start_speedtest();
+                    }
                 } else if contains(self.hit_st_back, col, row) {
+                    if self.speedtest_running {
+                        self.stop_speedtest();
+                    }
                     self.close_speedtest_screen();
                 } else if contains(self.hit_st_dur_dec, col, row) {
                     self.adjust_speedtest_duration(-1);
