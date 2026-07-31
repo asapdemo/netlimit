@@ -1,0 +1,314 @@
+/* NetLimit — btop-inspired dark theme */
+
+/* ── Theme ──────────────────────────────────────────────────────── */
+Screen {
+    background: #0d1117;
+    color: #c9d1d9;
+}
+
+Header {
+    background: #161b22;
+    color: #58a6ff;
+    text-style: bold;
+}
+
+/* ── Layout ─────────────────────────────────────────────────────── */
+#main {
+    width: 100%;
+    height: 1fr;
+    padding: 1 2;
+}
+
+#title-row {
+    height: 3;
+    content-align: center middle;
+    text-align: center;
+    color: #58a6ff;
+    text-style: bold;
+    margin-bottom: 0;
+}
+
+#title-row Static {
+    width: 100%;
+    text-align: center;
+    color: #58a6ff;
+    text-style: bold;
+}
+
+#iface-section {
+    height: 3;
+    margin: 0 0 1 0;
+    padding: 0 1;
+    background: #161b22;
+    border: tall #30363d;
+}
+
+InterfaceBar {
+    height: 100%;
+    width: 100%;
+}
+
+.iface-bar-inner {
+    height: 100%;
+    align: left middle;
+    padding: 0 1;
+}
+
+.iface-label {
+    color: #8b949e;
+    width: 12;
+    text-style: bold;
+}
+
+.iface-name {
+    color: #3fb950;
+    text-style: bold;
+    width: auto;
+    min-width: 10;
+    margin-right: 2;
+}
+
+.iface-state {
+    color: #8b949e;
+    width: 10;
+    margin-right: 2;
+}
+
+.iface-state.state-up {
+    color: #3fb950;
+}
+
+.iface-state.state-down {
+    color: #f85149;
+}
+
+.iface-btn {
+    min-width: 3;
+    width: 3;
+    height: 1;
+    margin: 0 0 0 1;
+    background: #21262d;
+    border: none;
+    color: #c9d1d9;
+}
+
+.iface-btn:hover {
+    background: #30363d;
+    color: #58a6ff;
+}
+
+/* ── Metric cards ───────────────────────────────────────────────── */
+#metrics-row {
+    height: 12;
+    margin-bottom: 1;
+}
+
+MetricCard {
+    width: 1fr;
+    height: 100%;
+    margin: 0 1;
+    padding: 1;
+    background: #161b22;
+    border: tall #30363d;
+}
+
+MetricCard:first-child {
+    margin-left: 0;
+}
+
+MetricCard:last-child {
+    margin-right: 0;
+}
+
+MetricCard.selected {
+    border: tall #58a6ff;
+    background: #1c2333;
+}
+
+MetricCard#card-download.selected {
+    border: tall #58a6ff;
+}
+
+MetricCard#card-upload.selected {
+    border: tall #3fb950;
+}
+
+MetricCard#card-loss.selected {
+    border: tall #d29922;
+}
+
+.metric-inner {
+    height: 100%;
+    align: center middle;
+}
+
+.metric-title {
+    width: 100%;
+    text-align: center;
+    color: #8b949e;
+    text-style: bold;
+    margin-bottom: 0;
+}
+
+.metric-value {
+    width: 100%;
+    text-align: center;
+    text-style: bold;
+    color: #58a6ff;
+    content-align: center middle;
+    height: 3;
+    padding: 0;
+}
+
+#card-download .metric-value {
+    color: #58a6ff;
+}
+
+#card-upload .metric-value {
+    color: #3fb950;
+}
+
+#card-loss .metric-value {
+    color: #d29922;
+}
+
+.metric-unit {
+    width: 100%;
+    text-align: center;
+    color: #8b949e;
+    margin-bottom: 1;
+}
+
+.metric-controls {
+    width: 100%;
+    height: 3;
+    align: center middle;
+}
+
+.metric-btn {
+    min-width: 5;
+    width: 5;
+    margin: 0 1;
+    background: #21262d;
+    color: #c9d1d9;
+    border: solid #30363d;
+}
+
+.metric-btn:hover {
+    background: #30363d;
+    color: #f0f6fc;
+    border: solid #58a6ff;
+}
+
+.metric-btn:focus {
+    background: #30363d;
+    border: solid #58a6ff;
+}
+
+/* ── Applied / live status panel ────────────────────────────────── */
+#status-panel {
+    height: 7;
+    padding: 1 2;
+    background: #161b22;
+    border: tall #30363d;
+    margin-bottom: 1;
+}
+
+#status-panel-title {
+    color: #8b949e;
+    text-style: bold;
+    margin-bottom: 1;
+}
+
+#applied-summary {
+    color: #c9d1d9;
+    height: 2;
+}
+
+/* ── Action buttons ─────────────────────────────────────────────── */
+#actions {
+    height: 3;
+    align: center middle;
+    margin-bottom: 1;
+}
+
+#actions Button {
+    margin: 0 1;
+    min-width: 14;
+    background: #21262d;
+    color: #c9d1d9;
+    border: solid #30363d;
+    text-style: bold;
+}
+
+#actions #btn-apply {
+    background: #238636;
+    color: #ffffff;
+    border: solid #2ea043;
+}
+
+#actions #btn-apply:hover {
+    background: #2ea043;
+}
+
+#actions #btn-reset {
+    background: #21262d;
+    color: #f85149;
+    border: solid #f85149;
+}
+
+#actions #btn-reset:hover {
+    background: #3d1f1f;
+}
+
+#actions #btn-quit {
+    background: #21262d;
+    color: #8b949e;
+    border: solid #30363d;
+}
+
+#actions #btn-quit:hover {
+    background: #30363d;
+    color: #c9d1d9;
+}
+
+/* ── Status banner ──────────────────────────────────────────────── */
+StatusBanner {
+    height: 3;
+    padding: 1 2;
+    background: #161b22;
+    border: tall #30363d;
+    color: #8b949e;
+}
+
+StatusBanner.info {
+    color: #8b949e;
+    border: tall #30363d;
+}
+
+StatusBanner.success {
+    color: #3fb950;
+    border: tall #238636;
+    background: #0d1f14;
+}
+
+StatusBanner.error {
+    color: #f85149;
+    border: tall #f85149;
+    background: #1f0d0d;
+}
+
+StatusBanner.warn {
+    color: #d29922;
+    border: tall #d29922;
+    background: #1f1a0d;
+}
+
+/* ── Footer key help ────────────────────────────────────────────── */
+KeyHelp {
+    dock: bottom;
+    height: 1;
+    background: #0d1117;
+    color: #6e7681;
+    padding: 0 2;
+}
