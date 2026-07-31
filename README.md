@@ -1,115 +1,154 @@
 # NetLimit
 
-Interactive **btop-style** TUI for system-wide Linux network traffic control.
+Interactive **btop-style** TUI for system-wide network traffic control on **Linux**.
 
-Built with **Rust** + **ratatui**. Limits download, upload, and packet loss via `tc` / `netem` / IFB.
+Shape **download**, **upload**, **packet loss**, **delay**, and **jitter** using native `tc` / `netem` / IFB. Measure the path with ICMP path-quality graphs and a full-screen **Cloudflare** speed test.
+
+| | |
+|--|--|
+| Language | Rust + [ratatui](https://ratatui.rs) |
+| Binary | `netlimit` |
+| OS | Linux (requires `iproute2`) |
+| Privileges | Root for Apply / Reset (`sudo`) |
+
+**Documentation**
+
+- English: [docs/en/README.md](docs/en/README.md)
+- Українська: [docs/uk/README.md](docs/uk/README.md)
+
+---
 
 ## Features
 
-- Dense dark dashboard (btop-inspired)
-- **Shape:** download / upload Mbps, packet loss, **delay**, **jitter** (`tc` + `netem` + IFB)
-- Full interface list (click to select)
-- Keyboard + mouse (`−`/`+`, sliders, buttons)
-- **Presets:** No limits, 4G, 3G, Starlink (+ custom save/delete)
-- **Path quality** — live ICMP loss + latency graphs
-- **Cloudflare speed test** — full-screen graphs, per-phase re-run, duration
-- **History [h]** — last speed tests on disk
-- Single binary: `netlimit`
+- Dark TUI inspired by btop
+- Rate limits (Mbps), packet loss (%), delay & jitter (ms)
+- Interface picker (list + default route marker)
+- Presets: **No limits**, **4G**, **3G**, **Starlink** (+ custom save/delete)
+- Path quality: live packet-loss and RTT graphs (ICMP to `1.1.1.1`)
+- Cloudflare speed test (per-phase duration, re-run each graph)
+- Speed-test history on disk
+- Mouse + keyboard controls
+
+---
 
 ## Requirements
 
-- Linux + `iproute2` (`tc`, `ip`)
-- Root for Apply / Reset
-- Rust 1.74+ (only if building from source)
+| Requirement | Notes |
+|-------------|--------|
+| **Linux** | Traffic control uses `tc` / `ip` |
+| **iproute2** | Provides `tc` and `ip` |
+| **Root** | Needed to apply or reset limits |
+| **Rust 1.74+** | Only if building from source |
+| **ping** | Used for path-quality sampling (usually preinstalled) |
 
-## Install (prebuilt binaries)
-
-GitHub Actions builds release archives for:
-
-| Archive | Use on |
-|---------|--------|
-| `netlimit-linux-x86_64.tar.gz` | **Arch Linux**, Ubuntu/Debian/Fedora x86_64, most PCs/servers |
-| `netlimit-linux-aarch64.tar.gz` | **Raspberry Pi** (64-bit OS), other ARM64 Linux |
-
-### Arch Linux (x86_64)
+Install `iproute2`:
 
 ```bash
-# From a GitHub Release asset (replace VERSION / URL as needed)
+# Debian / Ubuntu / Raspberry Pi OS
+sudo apt update && sudo apt install -y iproute2
+
+# Arch Linux
+sudo pacman -S --needed iproute2
+
+# Fedora
+sudo dnf install iproute-tc
+```
+
+---
+
+## Install
+
+### Option A — Build from source (recommended for development)
+
+```bash
+# 1. Clone
+git clone https://github.com/virtuoz-afk/netlimit.git
+cd netlimit
+
+# 2. Build release binary
+cargo build --release
+
+# 3. Run with full path (always works with sudo)
+sudo ./target/release/netlimit
+
+# 4. Optional: install system-wide
+sudo install -m 755 target/release/netlimit /usr/local/bin/netlimit
+sudo netlimit
+```
+
+### Option B — Install the release binary into `/usr/local/bin`
+
+After building (or downloading a release asset if available):
+
+```bash
+sudo install -m 755 ./target/release/netlimit /usr/local/bin/netlimit
+sudo netlimit
+```
+
+Why a **full path or `/usr/local/bin` link**?  
+`sudo` uses a restricted `PATH` and often cannot see `./target/release` or `~/.cargo/bin`.
+
+### Option C — Cargo install (from local tree)
+
+```bash
+cd netlimit
+cargo install --path .
+# then:
+sudo "$(which netlimit)"
+# or:
+sudo ln -sf ~/.cargo/bin/netlimit /usr/local/bin/netlimit
+sudo netlimit
+```
+
+### Option D — Prebuilt GitHub Releases (if published)
+
+If [Releases](https://github.com/virtuoz-afk/netlimit/releases) provide archives:
+
+```bash
+# x86_64 (typical PC / Arch / Ubuntu desktop)
 curl -LO https://github.com/virtuoz-afk/netlimit/releases/latest/download/netlimit-linux-x86_64.tar.gz
 tar -xzf netlimit-linux-x86_64.tar.gz
 sudo install -m 755 netlimit-linux-x86_64/netlimit /usr/local/bin/netlimit
-sudo pacman -S --needed iproute2
 sudo netlimit
 ```
 
-### Raspberry Pi (aarch64, 64-bit OS)
-
 ```bash
+# aarch64 (Raspberry Pi 64-bit, ARM servers)
 curl -LO https://github.com/virtuoz-afk/netlimit/releases/latest/download/netlimit-linux-aarch64.tar.gz
 tar -xzf netlimit-linux-aarch64.tar.gz
 sudo install -m 755 netlimit-linux-aarch64/netlimit /usr/local/bin/netlimit
-sudo apt update && sudo apt install -y iproute2
 sudo netlimit
 ```
 
-> Use the **aarch64** build on 64-bit Raspberry Pi OS. 32-bit Pi OS is not built by default.
+> Adjust archive names to match the actual release assets.
 
-### How releases are produced
-
-Push a version tag to trigger packaging and a GitHub Release:
+### Verify install
 
 ```bash
-git tag v0.1.0
-git push origin v0.1.0
+netlimit --version
+which netlimit
+sudo netlimit --no-sudo   # opens UI without re-exec (Apply needs root)
 ```
 
-Workflow: [`.github/workflows/release.yml`](.github/workflows/release.yml)  
-(also runs on PRs / pushes for CI artifacts; manual **workflow_dispatch** can create a release.)
+---
 
-## Build from source
+## Quick start
 
 ```bash
-cargo build --release
-
-# absolute path works with sudo (secure_path safe)
-sudo ./target/release/netlimit
-
-# optional system link
-sudo ln -sf "$(pwd)/target/release/netlimit" /usr/local/bin/netlimit
 sudo netlimit
 ```
 
-Development:
+1. Select a **network interface** (left list).  
+2. Adjust **Download / Upload / Loss / Delay / Jitter**, or pick a **preset**.  
+3. Press **Apply** (`a`) to enforce limits.  
+4. Optional: open **Speed Test** (`t`) to measure under those limits.  
+5. Press **Reset** (`r`) when finished.
 
-```bash
-cargo run -- --no-sudo          # UI without elevation
-cargo run -- -i wlan0
-```
+Without root the app tries to re-run itself with `sudo` (absolute path).
 
-If launched without root, the app re-execs via `sudo` using its absolute path.
+---
 
-## Controls
-
-### Metric cards
-- **`[ − ]` / `[ + ]`** — step values
-- **Slider** — click or drag (0–200 Mbps / 0–100% loss)
-- Scroll wheel over a card to nudge
-
-### Interfaces
-- Full list with state (`up` / `down`) and default marker
-- Click a row to select · `[` / `]` or `i` to cycle
-
-### Presets
-| Action | How |
-|--------|-----|
-| Load | `1`–`9` or click chip |
-| Save | `s` or **+ Save** |
-| Delete custom | click **`×`**, or select + `x` / `Del` |
-
-Customs: `~/.config/netlimit/presets.json`.  
-Loading only fills the draft — press **Apply** to enforce.
-
-### Keys
+## Controls (summary)
 
 | Key | Action |
 |-----|--------|
@@ -127,48 +166,60 @@ Loading only fills the draft — press **Apply** to enforce.
 | `i` / `[` `]` | Cycle interface |
 | `q` / `Esc` | Quit |
 
-### Path quality & speed test
+Full guide: [docs/en/README.md](docs/en/README.md) · [docs/uk/README.md](docs/uk/README.md)
 
-| Feature | Where |
-|---------|--------|
-| LOSS sparkline + RTT | Main screen **PATH QUALITY** panel (ping `1.1.1.1`) |
-| Live ↓/↑ Mbps readout | Same panel (from `/proc/net/dev`) |
-| Cloudflare test | Full-screen (`t` or the speed-test button) |
+---
 
-**Speed test screen:** set duration **5–120s** with `←`/`→` or `−`/`+`, **Run** with Enter/`t`, **Back** with Esc/`b`.  
-Longer duration uses larger payloads for more stable Mbps. Active NetLimit rules affect results.
+## How it works
 
-## How traffic control works
+| Control | Mechanism |
+|---------|-----------|
+| **Upload** | HTB + netem on interface egress |
+| **Download** | Ingress redirected to `ifb0`, then HTB + netem |
+| **Loss / delay / jitter** | `netem` on shaped paths |
+| **Reset** | Delete root/ingress qdiscs; bring `ifb0` down |
 
-| Direction | Mechanism |
-|-----------|-----------|
-| Upload | HTB + netem on interface egress |
-| Download | Ingress → `ifb0`, then HTB + netem |
-| Loss | `netem loss` on shaped paths |
-| Reset | Remove root/ingress qdiscs; down `ifb0` |
+---
+
+## Data on disk
+
+| Path | Purpose |
+|------|---------|
+| `~/.config/netlimit/presets.json` | Custom presets |
+| `~/.config/netlimit/speedtest_history.json` | Speed-test history |
+
+---
+
+## Safety
+
+- Rules affect **all** traffic on the selected interface.
+- Always **Reset** when you are done testing.
+- Active limits change Cloudflare speed-test results (by design).
+
+---
 
 ## Project layout
 
 ```
 netlimit/
 ├── Cargo.toml
-├── README.md
+├── README.md                 # this file
+├── docs/
+│   ├── en/README.md          # English user guide
+│   └── uk/README.md          # Ukrainian user guide
 └── src/
-    ├── main.rs       # CLI flags + terminal lifecycle
-    ├── app.rs        # State, keys, mouse, apply/reset
-    ├── ui.rs         # Layout & widgets
-    ├── theme.rs      # Colors / styles
-    ├── tc.rs         # tc / netem / IFB
-    ├── netinfo.rs    # Interface discovery
-    ├── presets.rs    # Built-in + saved presets
-    └── elevate.rs    # sudo re-exec
+    ├── main.rs
+    ├── app.rs
+    ├── ui.rs
+    ├── tc.rs
+    ├── speedtest.rs
+    ├── monitor.rs
+    ├── presets.rs
+    ├── history.rs
+    └── …
 ```
 
-## Safety
-
-- Affects **all** traffic on the selected interface
-- Always **Reset** when finished
-- Requires root for rule changes
+---
 
 ## License
 
