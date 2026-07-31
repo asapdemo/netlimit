@@ -85,13 +85,42 @@ sudo netlimit
 sudo ./target/release/netlimit
 ```
 
-### Useful flags
+### Useful flags and CLI commands
 
 ```bash
 netlimit --version
-sudo netlimit -i wlan0          # pick interface
-sudo netlimit --no-sudo         # do not re-exec (UI only; Apply needs root)
+netlimit --help
+
+# TUI (default)
+sudo netlimit
+sudo netlimit tui -i wlan0
+sudo netlimit --no-sudo         # do not re-exec (Apply needs root)
+
+# Shape / clear (root)
+sudo netlimit apply --download 10 --upload 2 --loss 1
+sudo netlimit apply --preset 4G
+sudo netlimit reset
+
+# Inspect (no root)
+netlimit status
+netlimit interfaces
+netlimit presets
+netlimit history
+netlimit speedtest --duration 5 --scope full
 ```
+
+| Command | Purpose |
+|---------|---------|
+| `tui` | Interactive UI (default) |
+| `apply` | Set download/upload/loss/delay/jitter or `--preset` |
+| `reset` | Remove shaping |
+| `status` | Current limits |
+| `interfaces` | List NICs |
+| `presets` | List presets |
+| `speedtest` | Cloudflare test in the terminal |
+| `history` | Saved results |
+
+Global: `-i` / `--interface`, `--no-sudo`, `--json`.
 
 ### Sudo and PATH
 

@@ -85,13 +85,42 @@ sudo netlimit
 sudo ./target/release/netlimit
 ```
 
-### Корисні прапорці
+### Корисні прапорці та CLI-команди
 
 ```bash
 netlimit --version
-sudo netlimit -i wlan0          # обрати інтерфейс
+netlimit --help
+
+# TUI (за замовчуванням)
+sudo netlimit
+sudo netlimit tui -i wlan0
 sudo netlimit --no-sudo         # без повторного sudo (Apply все одно потребує root)
+
+# Обмеження / скидання (root)
+sudo netlimit apply --download 10 --upload 2 --loss 1
+sudo netlimit apply --preset 4G
+sudo netlimit reset
+
+# Перегляд (root не потрібен)
+netlimit status
+netlimit interfaces
+netlimit presets
+netlimit history
+netlimit speedtest --duration 5 --scope full
 ```
+
+| Команда | Призначення |
+|---------|-------------|
+| `tui` | Інтерактивний інтерфейс (за замовчуванням) |
+| `apply` | Встановити download/upload/loss/delay/jitter або `--preset` |
+| `reset` | Зняти обмеження |
+| `status` | Поточні ліміти |
+| `interfaces` | Список інтерфейсів |
+| `presets` | Список пресетів |
+| `speedtest` | Cloudflare-тест у терміналі |
+| `history` | Збережені результати |
+
+Глобальні: `-i` / `--interface`, `--no-sudo`, `--json`.
 
 ### Sudo і PATH
 

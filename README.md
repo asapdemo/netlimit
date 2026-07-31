@@ -134,8 +134,12 @@ sudo netlimit --no-sudo   # opens UI without re-exec (Apply needs root)
 
 ## Quick start
 
+### Interactive TUI (default)
+
 ```bash
 sudo netlimit
+# same as:
+sudo netlimit tui
 ```
 
 1. Select a **network interface** (left list).  
@@ -145,6 +149,41 @@ sudo netlimit
 5. Press **Reset** (`r`) when finished.
 
 Without root the app tries to re-run itself with `sudo` (absolute path).
+
+### CLI commands
+
+```bash
+netlimit --help
+
+# Shape traffic (needs root; re-execs with sudo unless --no-sudo)
+sudo netlimit apply --download 10 --upload 2 --loss 1 --delay 50 --jitter 10
+sudo netlimit apply --preset 4G -i wlan0
+sudo netlimit reset
+
+# Inspect (no root required)
+netlimit status
+netlimit status --json
+netlimit interfaces
+netlimit presets
+netlimit history -n 10
+
+# Cloudflare speed test from the shell
+netlimit speedtest --duration 5
+netlimit speedtest --scope download -t 8 --json
+```
+
+| Command | Description |
+|---------|-------------|
+| `tui` | Interactive UI (default if no command) |
+| `apply` | Apply limits (`--download`, `--upload`, `--loss`, `--delay`, `--jitter`, `--preset`) |
+| `reset` | Clear shaping on the interface |
+| `status` | Show current limits |
+| `interfaces` | List NICs (`ifaces` alias) |
+| `presets` | List built-in + custom presets |
+| `speedtest` | Non-interactive Cloudflare test |
+| `history` | Print saved speed-test results |
+
+Global flags: `-i` / `--interface`, `--no-sudo`, `--json`.
 
 ---
 
@@ -209,6 +248,7 @@ netlimit/
 │   └── uk/README.md          # Ukrainian user guide
 └── src/
     ├── main.rs
+    ├── cli.rs                # clap subcommands
     ├── app.rs
     ├── ui.rs
     ├── tc.rs
