@@ -7,13 +7,14 @@ Built with **Rust** + **ratatui**. Limits download, upload, and packet loss via 
 ## Features
 
 - Dense dark dashboard (btop-inspired)
-- Download / upload Mbps + packet loss %
+- **Shape:** download / upload Mbps, packet loss, **delay**, **jitter** (`tc` + `netem` + IFB)
 - Full interface list (click to select)
 - Keyboard + mouse (`−`/`+`, sliders, buttons)
-- Presets (built-in + custom, save/delete)
-- **Path quality** — live ICMP loss sparkline + RTT (main screen)
-- **Cloudflare speed test** — full-screen report, configurable duration (`t`)
-- Apply / Reset with status feedback
+- **Presets:** No limits, 4G, 3G, Starlink (+ custom save/delete)
+- **Validate [v]** — apply limits then auto Cloudflare test; show result vs limits
+- **Path quality** — live ICMP loss sparkline + RTT
+- **Cloudflare speed test** — full-screen graphs, per-phase re-run, duration
+- **History [h]** — last speed tests on disk
 - Single binary: `netlimit`
 
 ## Requirements
@@ -76,8 +77,11 @@ Loading only fills the draft — press **Apply** to enforce.
 | `s` | Save custom preset |
 | `x` / `Del` | Delete selected custom preset |
 | `a` | Apply |
+| `v` | Validate (apply + speed test) |
 | `r` | Reset |
-| `t` | Open Cloudflare speed test screen |
+| `t` | Speed test screen |
+| `h` | History |
+| `y` / `j` | Focus delay / jitter |
 | `i` / `[` `]` | Cycle interface |
 | `q` / `Esc` | Quit |
 

@@ -14,20 +14,60 @@ pub struct SampleHistory {
     pub up_mbps: VecDeque<u64>,
     /// Packet loss percent × 10 (so 0.5% → 5) for sparkline resolution.
     pub loss_x10: VecDeque<u64>,
+    /// RTT in 0.1 ms units (12.3 ms → 123).
+    pub rtt_x10: VecDeque<u64>,
 }
 
 impl SampleHistory {
-    pub fn push(&mut self, down: f64, up: f64, loss_pct: f64) {
+    pub fn push(&mut self, down: f64, up: f64, loss_pct: f64, rtt_ms: Option<f64>) {
         push_capped(&mut self.down_mbps, rate_to_spark(down));
         push_capped(&mut self.up_mbps, rate_to_spark(up));
         push_capped(
             &mut self.loss_x10,
             (loss_pct.clamp(0.0, 100.0) * 10.0).round() as u64,
         );
+        // Keep chart continuous: use 0 when ping fails so gaps are visible as dips
+        let rtt_u = rtt_ms
+            .map(|m| (m.max(0.0) * 10.0).round() as u64)
+            .unwrap_or(0);
+        push_capped(&mut self.rtt_x10, rtt_u);
     }
 
     pub fn loss_slice(&self) -> Vec<u64> {
         self.loss_x10.iter().copied().collect()
+    }
+
+    pub fn rtt_slice(&self) -> Vec<u64> {
+        self.rtt_x10.iter().copied().collect()
+    }
+}
+
+/// Human quality label for packet loss %.
+pub fn loss_quality(loss_pct: f64) -> (&'static str, ratatui::style::Color) {
+    use crate::theme;
+    if loss_pct <= 0.0 {
+        ("Excellent", theme::SUCCESS)
+    } else if loss_pct < 1.0 {
+        ("Good", theme::SUCCESS)
+    } else if loss_pct < 3.0 {
+        ("Fair", theme::WARN)
+    } else if loss_pct < 8.0 {
+        ("Poor", theme::ERROR)
+    } else {
+        ("Bad", theme::ERROR)
+    }
+}
+
+/// Human quality label for RTT.
+pub fn rtt_quality(rtt_ms: Option<f64>) -> (&'static str, ratatui::style::Color) {
+    use crate::theme;
+    match rtt_ms {
+        None => ("no reply", theme::ERROR),
+        Some(ms) if ms < 30.0 => ("Excellent", theme::SUCCESS),
+        Some(ms) if ms < 60.0 => ("Good", theme::SUCCESS),
+        Some(ms) if ms < 120.0 => ("Fair", theme::WARN),
+        Some(ms) if ms < 250.0 => ("Slow", theme::WARN),
+        Some(_) => ("High latency", theme::ERROR),
     }
 }
 
@@ -212,6 +252,16 @@ impl PingMonitor {
             self.last_error = u.last_error;
             self.samples = u.samples;
         }
+    }
+
+    /// Approximate successes in the rolling window.
+    pub fn ok_count(&self) -> usize {
+        let n = self.samples;
+        if n == 0 {
+            return 0;
+        }
+        let lost = ((self.loss_percent / 100.0) * n as f64).round() as usize;
+        n.saturating_sub(lost)
     }
 }
 

@@ -8,12 +8,18 @@ use crate::netinfo::{default_interface, interface_exists};
 
 const IFB: &str = "ifb0";
 
-#[derive(Debug, Clone, Default, PartialEq)]
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Limits {
-    /// Mbps; 0 / None = unlimited
+    /// Mbps; 0 = unlimited
     pub download_mbps: f64,
     pub upload_mbps: f64,
     pub loss_percent: f64,
+    /// Base one-way delay in milliseconds (netem).
+    #[serde(default)]
+    pub delay_ms: f64,
+    /// Delay variation (jitter) in milliseconds (netem).
+    #[serde(default)]
+    pub jitter_ms: f64,
     pub interface: String,
 }
 
@@ -26,21 +32,36 @@ impl Limits {
             self.upload_mbps = 0.0;
         }
         self.loss_percent = self.loss_percent.clamp(0.0, 100.0);
+        self.delay_ms = self.delay_ms.clamp(0.0, 10_000.0);
+        self.jitter_ms = self.jitter_ms.clamp(0.0, 5_000.0);
+        // Jitter without base delay is still valid in netem as delay 0ms Xms
         self
     }
 
+    pub fn has_netem(&self) -> bool {
+        self.loss_percent > 0.0 || self.delay_ms > 0.0 || self.jitter_ms > 0.0
+    }
+
     pub fn is_active(&self) -> bool {
-        self.download_mbps > 0.0 || self.upload_mbps > 0.0 || self.loss_percent > 0.0
+        self.download_mbps > 0.0 || self.upload_mbps > 0.0 || self.has_netem()
     }
 
     pub fn summary(&self) -> String {
-        format!(
+        let mut s = format!(
             "iface={}  ↓ {}  ↑ {}  loss={}",
             self.interface,
             format_rate(self.download_mbps),
             format_rate(self.upload_mbps),
             format_loss(self.loss_percent),
-        )
+        );
+        if self.delay_ms > 0.0 || self.jitter_ms > 0.0 {
+            s.push_str(&format!(
+                "  delay={}±{}ms",
+                format_ms(self.delay_ms),
+                format_ms(self.jitter_ms)
+            ));
+        }
+        s
     }
 }
 
@@ -108,22 +129,46 @@ impl TrafficController {
         let _ = self.cleanup();
 
         let result = (|| -> Result<(), TcError> {
+            let netem = limits.has_netem();
+
             // Download path (ingress → IFB)
             if limits.download_mbps > 0.0 {
                 self.setup_ifb()?;
                 self.setup_ingress_redirect()?;
-                self.apply_shaping(&self.ifb, limits.download_mbps, limits.loss_percent)?;
-            } else if limits.loss_percent > 0.0 {
+                self.apply_shaping(
+                    &self.ifb,
+                    limits.download_mbps,
+                    limits.loss_percent,
+                    limits.delay_ms,
+                    limits.jitter_ms,
+                )?;
+            } else if netem {
                 self.setup_ifb()?;
                 self.setup_ingress_redirect()?;
-                self.apply_loss_only(&self.ifb, limits.loss_percent)?;
+                self.apply_netem_only(
+                    &self.ifb,
+                    limits.loss_percent,
+                    limits.delay_ms,
+                    limits.jitter_ms,
+                )?;
             }
 
             // Upload path (egress)
             if limits.upload_mbps > 0.0 {
-                self.apply_shaping(&self.interface, limits.upload_mbps, limits.loss_percent)?;
-            } else if limits.loss_percent > 0.0 {
-                self.apply_loss_only(&self.interface, limits.loss_percent)?;
+                self.apply_shaping(
+                    &self.interface,
+                    limits.upload_mbps,
+                    limits.loss_percent,
+                    limits.delay_ms,
+                    limits.jitter_ms,
+                )?;
+            } else if netem {
+                self.apply_netem_only(
+                    &self.interface,
+                    limits.loss_percent,
+                    limits.delay_ms,
+                    limits.jitter_ms,
+                )?;
             }
             Ok(())
         })();
@@ -160,11 +205,16 @@ impl TrafficController {
         let loss = parse_loss(&self.interface)
             .or_else(|| parse_loss(&self.ifb))
             .unwrap_or(0.0);
+        let (delay, jitter) = parse_delay(&self.interface)
+            .or_else(|| parse_delay(&self.ifb))
+            .unwrap_or((0.0, 0.0));
 
         Limits {
             download_mbps: download,
             upload_mbps: upload,
             loss_percent: loss,
+            delay_ms: delay,
+            jitter_ms: jitter,
             interface: self.interface.clone(),
         }
     }
@@ -214,7 +264,14 @@ impl TrafficController {
         Ok(())
     }
 
-    fn apply_shaping(&self, device: &str, rate_mbps: f64, loss: f64) -> Result<(), TcError> {
+    fn apply_shaping(
+        &self,
+        device: &str,
+        rate_mbps: f64,
+        loss: f64,
+        delay_ms: f64,
+        jitter_ms: f64,
+    ) -> Result<(), TcError> {
         let rate = mbps_to_tc(rate_mbps);
         run(&[
             "tc",
@@ -245,7 +302,8 @@ impl TrafficController {
             "ceil",
             &rate,
         ])?;
-        let mut args = vec![
+        let owned = netem_owned_args(loss, delay_ms, jitter_ms);
+        let mut args: Vec<&str> = vec![
             "tc",
             "qdisc",
             "add",
@@ -257,24 +315,28 @@ impl TrafficController {
             "10:",
             "netem",
         ];
-        let loss_s;
-        if loss > 0.0 {
-            loss_s = fmt_loss(loss);
-            args.push("loss");
-            args.push(&loss_s);
-        }
+        let extras: Vec<&str> = owned.iter().map(|s| s.as_str()).collect();
+        args.extend(extras);
         run(&args)?;
         Ok(())
     }
 
-    fn apply_loss_only(&self, device: &str, loss: f64) -> Result<(), TcError> {
-        if loss <= 0.0 {
+    fn apply_netem_only(
+        &self,
+        device: &str,
+        loss: f64,
+        delay_ms: f64,
+        jitter_ms: f64,
+    ) -> Result<(), TcError> {
+        if loss <= 0.0 && delay_ms <= 0.0 && jitter_ms <= 0.0 {
             return Ok(());
         }
-        let loss_s = fmt_loss(loss);
-        run(&[
-            "tc", "qdisc", "add", "dev", device, "root", "handle", "10:", "netem", "loss", &loss_s,
-        ])?;
+        let owned = netem_owned_args(loss, delay_ms, jitter_ms);
+        let mut args: Vec<&str> =
+            vec!["tc", "qdisc", "add", "dev", device, "root", "handle", "10:", "netem"];
+        let extras: Vec<&str> = owned.iter().map(|s| s.as_str()).collect();
+        args.extend(extras);
+        run(&args)?;
         Ok(())
     }
 
@@ -465,6 +527,61 @@ fn fmt_loss(p: f64) -> String {
     }
 }
 
+fn fmt_ms(ms: f64) -> String {
+    if (ms - ms.round()).abs() < f64::EPSILON {
+        format!("{}ms", ms as i64)
+    } else {
+        format!("{ms:.1}ms")
+    }
+}
+
+/// Build owned netem argument tokens (loss / delay / jitter).
+fn netem_owned_args(loss: f64, delay_ms: f64, jitter_ms: f64) -> Vec<String> {
+    let mut out = Vec::new();
+    if delay_ms > 0.0 || jitter_ms > 0.0 {
+        out.push("delay".into());
+        out.push(fmt_ms(delay_ms.max(0.0)));
+        if jitter_ms > 0.0 {
+            out.push(fmt_ms(jitter_ms));
+        }
+    }
+    if loss > 0.0 {
+        out.push("loss".into());
+        out.push(fmt_loss(loss));
+    }
+    // netem with no options is invalid as a useful leaf — callers should avoid empty.
+    if out.is_empty() {
+        // no-op netem: tiny delay 0 (some kernels accept empty netem, but be safe)
+        out.push("delay".into());
+        out.push("0ms".into());
+    }
+    out
+}
+
+fn parse_delay(device: &str) -> Option<(f64, f64)> {
+    if !interface_exists(device) {
+        return None;
+    }
+    let output = Command::new("tc")
+        .args(["qdisc", "show", "dev", device])
+        .output()
+        .ok()?;
+    let s = String::from_utf8_lossy(&output.stdout);
+    // "delay 50.0ms" or "delay 50.0ms  10.0ms"
+    let mut it = s.split_whitespace().peekable();
+    while let Some(w) = it.next() {
+        if w == "delay" {
+            let d = it.next()?.trim_end_matches("ms").parse().ok()?;
+            let j = it
+                .peek()
+                .and_then(|p| p.trim_end_matches("ms").parse().ok())
+                .unwrap_or(0.0);
+            return Some((d, j));
+        }
+    }
+    None
+}
+
 pub fn format_rate(mbps: f64) -> String {
     if mbps <= 0.0 {
         "Unlimited".into()
@@ -485,6 +602,16 @@ pub fn format_loss(p: f64) -> String {
     }
 }
 
+pub fn format_ms(ms: f64) -> String {
+    if ms <= 0.0 {
+        "0".into()
+    } else if (ms - ms.round()).abs() < f64::EPSILON {
+        format!("{}", ms as i64)
+    } else {
+        format!("{ms:.1}")
+    }
+}
+
 pub fn format_value(metric: Metric, value: f64) -> String {
     match metric {
         Metric::Download | Metric::Upload => {
@@ -496,7 +623,7 @@ pub fn format_value(metric: Metric, value: f64) -> String {
                 format!("{value:.1}")
             }
         }
-        Metric::Loss => {
+        Metric::Loss | Metric::Delay | Metric::Jitter => {
             if (value - value.round()).abs() < f64::EPSILON {
                 format!("{}", value as i64)
             } else {
@@ -511,16 +638,26 @@ pub enum Metric {
     Download,
     Upload,
     Loss,
+    Delay,
+    Jitter,
 }
 
 impl Metric {
-    pub const ALL: [Metric; 3] = [Metric::Download, Metric::Upload, Metric::Loss];
+    pub const ALL: [Metric; 5] = [
+        Metric::Download,
+        Metric::Upload,
+        Metric::Loss,
+        Metric::Delay,
+        Metric::Jitter,
+    ];
 
     pub fn label(self) -> &'static str {
         match self {
             Metric::Download => "DOWNLOAD",
             Metric::Upload => "UPLOAD",
             Metric::Loss => "PACKET LOSS",
+            Metric::Delay => "DELAY",
+            Metric::Jitter => "JITTER",
         }
     }
 
@@ -529,6 +666,17 @@ impl Metric {
             Metric::Download => "↓",
             Metric::Upload => "↑",
             Metric::Loss => "⚠",
+            Metric::Delay => "⏱",
+            Metric::Jitter => "∿",
+        }
+    }
+
+    pub fn unit_hint(self) -> &'static str {
+        match self {
+            Metric::Download | Metric::Upload => "Mbps · 0 = ∞",
+            Metric::Loss => "% packet loss",
+            Metric::Delay => "ms base latency",
+            Metric::Jitter => "ms variation",
         }
     }
 
@@ -536,6 +684,8 @@ impl Metric {
         match self {
             Metric::Download | Metric::Upload => 1.0,
             Metric::Loss => 0.5,
+            Metric::Delay => 5.0,
+            Metric::Jitter => 1.0,
         }
     }
 
@@ -543,6 +693,8 @@ impl Metric {
         match self {
             Metric::Download | Metric::Upload => 10.0,
             Metric::Loss => 5.0,
+            Metric::Delay => 50.0,
+            Metric::Jitter => 10.0,
         }
     }
 
@@ -550,6 +702,8 @@ impl Metric {
         match self {
             Metric::Download | Metric::Upload => 10_000.0,
             Metric::Loss => 100.0,
+            Metric::Delay => 5_000.0,
+            Metric::Jitter => 2_000.0,
         }
     }
 
@@ -558,11 +712,13 @@ impl Metric {
             Metric::Download => 0,
             Metric::Upload => 1,
             Metric::Loss => 2,
+            Metric::Delay => 3,
+            Metric::Jitter => 4,
         }
     }
 
     pub fn from_index(i: usize) -> Self {
-        Self::ALL[i % 3]
+        Self::ALL[i % Self::ALL.len()]
     }
 }
 
@@ -592,6 +748,11 @@ mod tests {
         assert!(!Limits::default().is_active());
         assert!(Limits {
             download_mbps: 1.0,
+            ..Default::default()
+        }
+        .is_active());
+        assert!(Limits {
+            delay_ms: 50.0,
             ..Default::default()
         }
         .is_active());

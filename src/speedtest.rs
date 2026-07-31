@@ -17,13 +17,34 @@ pub enum SampleKind {
     Latency,
 }
 
+/// Which part(s) of the test to run.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TestScope {
+    #[default]
+    Full,
+    Latency,
+    Download,
+    Upload,
+}
+
+impl TestScope {
+    pub fn label(self) -> &'static str {
+        match self {
+            TestScope::Full => "full",
+            TestScope::Latency => "latency",
+            TestScope::Download => "download",
+            TestScope::Upload => "upload",
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum SpeedTestEvent {
     Progress {
         phase: String,
         detail: String,
-        /// 0.0 ..= 1.0 overall progress estimate
-        progress: f64,
+        /// 0.0 ..= 1.0 progress **within the current phase**
+        phase_progress: f64,
     },
     /// One probe result for live / report graphs (Mbps or ms).
     Sample {
@@ -31,10 +52,13 @@ pub enum SpeedTestEvent {
         value: f64,
     },
     Finished {
-        download_mbps: f64,
-        upload_mbps: f64,
-        latency_ms: f64,
-        jitter_ms: f64,
+        scope: TestScope,
+        /// Filled only for phases that ran.
+        download_mbps: Option<f64>,
+        upload_mbps: Option<f64>,
+        latency_ms: Option<f64>,
+        jitter_ms: Option<f64>,
+        /// Per-phase duration setting (not total wall time).
         duration_secs: u32,
     },
     Failed(String),
@@ -55,52 +79,100 @@ pub struct SpeedTestResult {
 }
 
 /// Spawn Cloudflare speed test on a background thread.
-/// `duration_secs` targets overall wall time (clamped 5..=120).
-pub fn start(duration_secs: u32) -> Receiver<SpeedTestEvent> {
-    let duration_secs = duration_secs.clamp(5, 120);
+///
+/// `duration_secs` is the wall-clock budget **for each phase** that runs
+/// (latency, download, upload). A full test ≈ 3 × duration_secs.
+pub fn start(duration_secs: u32, scope: TestScope) -> Receiver<SpeedTestEvent> {
+    let duration_secs = duration_secs.clamp(1, 120);
     let (tx, rx) = mpsc::channel();
     thread::spawn(move || {
-        if let Err(e) = run_test(&tx, duration_secs) {
+        if let Err(e) = run_test(&tx, duration_secs, scope) {
             let _ = tx.send(SpeedTestEvent::Failed(e));
         }
     });
     rx
 }
 
-fn run_test(tx: &Sender<SpeedTestEvent>, duration_secs: u32) -> Result<(), String> {
+fn run_test(
+    tx: &Sender<SpeedTestEvent>,
+    duration_secs: u32,
+    scope: TestScope,
+) -> Result<(), String> {
     let client = Client::builder()
-        .timeout(Duration::from_secs(90))
+        .timeout(Duration::from_secs(120))
         .connect_timeout(Duration::from_secs(10))
         .pool_max_idle_per_host(4)
         .build()
         .map_err(|e| format!("http client: {e}"))?;
 
-    let started = Instant::now();
-    let budget = Duration::from_secs(duration_secs as u64);
+    let phase_budget = Duration::from_secs(duration_secs as u64);
 
-    // Budget split: ~20% latency, ~50% download, ~30% upload
-    let lat_budget = budget.mul_f64(0.20);
-    let down_budget = budget.mul_f64(0.50);
-    let up_budget = budget.mul_f64(0.30);
+    let mut download_mbps = None;
+    let mut upload_mbps = None;
+    let mut latency_ms = None;
+    let mut jitter_ms = None;
 
-    // ── Latency / jitter ────────────────────────────────────────────
+    // ── Latency ─────────────────────────────────────────────────────
+    if matches!(scope, TestScope::Full | TestScope::Latency) {
+        let (lat, jit) = run_latency_phase(tx, &client, phase_budget)?;
+        latency_ms = Some(lat);
+        jitter_ms = Some(jit);
+    }
+
+    // ── Download ────────────────────────────────────────────────────
+    if matches!(scope, TestScope::Full | TestScope::Download) {
+        download_mbps = Some(run_download_phase(tx, &client, phase_budget)?);
+    }
+
+    // ── Upload ──────────────────────────────────────────────────────
+    if matches!(scope, TestScope::Full | TestScope::Upload) {
+        upload_mbps = Some(run_upload_phase(tx, &client, phase_budget)?);
+    }
+
+    let _ = tx.send(SpeedTestEvent::Finished {
+        scope,
+        download_mbps,
+        upload_mbps,
+        latency_ms,
+        jitter_ms,
+        duration_secs,
+    });
+    Ok(())
+}
+
+fn run_latency_phase(
+    tx: &Sender<SpeedTestEvent>,
+    client: &Client,
+    budget: Duration,
+) -> Result<(f64, f64), String> {
     let _ = tx.send(SpeedTestEvent::Progress {
         phase: "latency".into(),
-        detail: "measuring RTT to Cloudflare…".into(),
-        progress: 0.02,
+        detail: format!("measuring RTT for {}s…", budget.as_secs()),
+        phase_progress: 0.0,
     });
 
     let mut rtts = Vec::new();
-    let lat_deadline = Instant::now() + lat_budget;
+    let start = Instant::now();
+    let deadline = start + budget;
     let mut i = 0u32;
-    while Instant::now() < lat_deadline || rtts.len() < 4 {
+
+    // Run for the full phase budget (at least 4 samples if possible).
+    while Instant::now() < deadline || rtts.len() < 4 {
+        if Instant::now() >= deadline && rtts.len() >= 4 {
+            break;
+        }
+        // Safety cap so we never spin forever if clock skews
+        if i >= 500 {
+            break;
+        }
         i += 1;
+        let frac = (start.elapsed().as_secs_f64() / budget.as_secs_f64()).min(1.0);
         let _ = tx.send(SpeedTestEvent::Progress {
             phase: "latency".into(),
-            detail: format!("latency sample #{i}"),
-            progress: 0.05 + 0.15 * (i as f64 / 12.0).min(1.0),
+            detail: format!("latency #{i}"),
+            phase_progress: frac,
         });
-        match measure_latency_ms(&client) {
+        match measure_latency_ms(client) {
             Ok(ms) => {
                 rtts.push(ms);
                 let _ = tx.send(SpeedTestEvent::Sample {
@@ -108,21 +180,26 @@ fn run_test(tx: &Sender<SpeedTestEvent>, duration_secs: u32) -> Result<(), Strin
                     value: ms,
                 });
             }
-            Err(e) if rtts.is_empty() && i >= 3 => {
+            Err(e) if rtts.is_empty() && i >= 5 => {
                 return Err(format!("latency probe failed: {e}"));
             }
             Err(_) => {}
         }
-        if i >= 20 {
-            break;
-        }
-        thread::sleep(Duration::from_millis(30));
+        thread::sleep(Duration::from_millis(20));
     }
     if rtts.is_empty() {
         return Err("could not measure latency to Cloudflare".into());
     }
-    rtts.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-    let latency_ms = percentile(&rtts, 0.5);
+
+    let _ = tx.send(SpeedTestEvent::Progress {
+        phase: "latency".into(),
+        detail: format!("latency done · {} probes", rtts.len()),
+        phase_progress: 1.0,
+    });
+
+    let mut sorted = rtts.clone();
+    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let latency_ms = percentile(&sorted, 0.5);
     let jitter_ms = if rtts.len() >= 2 {
         let mean = rtts.iter().sum::<f64>() / rtts.len() as f64;
         let var = rtts.iter().map(|x| (x - mean).powi(2)).sum::<f64>() / rtts.len() as f64;
@@ -130,127 +207,176 @@ fn run_test(tx: &Sender<SpeedTestEvent>, duration_secs: u32) -> Result<(), Strin
     } else {
         0.0
     };
+    Ok((latency_ms, jitter_ms))
+}
 
-    // ── Download ────────────────────────────────────────────────────
-    let down_sizes: &[u64] = match duration_secs {
-        0..=9 => &[500_000, 1_000_000, 5_000_000],
-        10..=19 => &[1_000_000, 5_000_000, 10_000_000, 25_000_000],
-        20..=39 => &[1_000_000, 5_000_000, 10_000_000, 25_000_000, 50_000_000],
-        _ => &[
-            1_000_000,
-            5_000_000,
-            10_000_000,
-            25_000_000,
-            50_000_000,
-            100_000_000,
-        ],
-    };
+fn run_download_phase(
+    tx: &Sender<SpeedTestEvent>,
+    client: &Client,
+    budget: Duration,
+) -> Result<f64, String> {
+    let pool: &[u64] = &[
+        256_000, 512_000, 1_000_000, 2_000_000, 5_000_000, 10_000_000,
+    ];
+    let mut rates = Vec::new();
+    let start = Instant::now();
+    let deadline = start + budget;
+    let mut step = 0usize;
 
-    let mut down_rates = Vec::new();
-    let down_deadline = Instant::now() + down_budget;
-    for (idx, &bytes) in down_sizes.iter().enumerate() {
-        if Instant::now() >= down_deadline && !down_rates.is_empty() {
+    while Instant::now() < deadline || rates.len() < 3 {
+        if Instant::now() >= deadline && rates.len() >= 3 {
             break;
         }
+        if step > 200 {
+            break;
+        }
+        let bytes = pick_payload(pool, step, rates.len());
         let label = format_bytes(bytes);
-        let prog = 0.20 + 0.50 * ((idx + 1) as f64 / down_sizes.len() as f64);
+        let n = rates.len() + 1;
+        let frac = (start.elapsed().as_secs_f64() / budget.as_secs_f64()).min(1.0);
         let _ = tx.send(SpeedTestEvent::Progress {
             phase: "download".into(),
-            detail: format!("downloading {label}…"),
-            progress: prog,
+            detail: format!("↓ #{n} {label}…"),
+            phase_progress: frac,
         });
-        match measure_download_mbps(&client, bytes) {
+        match measure_download_mbps(client, bytes) {
             Ok(mbps) => {
-                down_rates.push(mbps);
+                rates.push(mbps);
                 let _ = tx.send(SpeedTestEvent::Sample {
                     kind: SampleKind::Download,
                     value: mbps,
                 });
                 let _ = tx.send(SpeedTestEvent::Progress {
                     phase: "download".into(),
-                    detail: format!("{label} → {mbps:.1} Mbps"),
-                    progress: prog,
+                    detail: format!("↓ #{n} {label} → {mbps:.1} Mbps"),
+                    phase_progress: frac,
                 });
             }
             Err(e) => {
                 let _ = tx.send(SpeedTestEvent::Progress {
                     phase: "download".into(),
-                    detail: format!("{label} failed: {e}"),
-                    progress: prog,
+                    detail: format!("↓ #{n} failed: {e}"),
+                    phase_progress: frac,
                 });
+                if rates.is_empty() && step >= 4 {
+                    return Err(format!("download probes failed: {e}"));
+                }
             }
         }
+        step += 1;
     }
-    if down_rates.is_empty() {
+    if rates.is_empty() {
         return Err("all download probes failed".into());
     }
-    let download_mbps = max_f64(&down_rates);
+    let _ = tx.send(SpeedTestEvent::Progress {
+        phase: "download".into(),
+        detail: format!("download done · {} probes", rates.len()),
+        phase_progress: 1.0,
+    });
+    Ok(max_f64(&rates))
+}
 
-    // ── Upload ──────────────────────────────────────────────────────
-    let up_sizes: &[usize] = match duration_secs {
-        0..=9 => &[500_000, 1_000_000],
-        10..=19 => &[1_000_000, 5_000_000, 10_000_000],
-        20..=39 => &[1_000_000, 5_000_000, 10_000_000, 25_000_000],
-        _ => &[1_000_000, 5_000_000, 10_000_000, 25_000_000, 50_000_000],
-    };
+fn run_upload_phase(
+    tx: &Sender<SpeedTestEvent>,
+    client: &Client,
+    budget: Duration,
+) -> Result<f64, String> {
+    let pool: &[usize] = &[256_000, 512_000, 1_000_000, 2_000_000, 5_000_000];
+    let mut rates = Vec::new();
+    let start = Instant::now();
+    let deadline = start + budget;
+    let mut step = 0usize;
 
-    let mut up_rates = Vec::new();
-    let up_deadline = Instant::now() + up_budget;
-    for (idx, &bytes) in up_sizes.iter().enumerate() {
-        if Instant::now() >= up_deadline && !up_rates.is_empty() {
+    while Instant::now() < deadline || rates.len() < 3 {
+        if Instant::now() >= deadline && rates.len() >= 3 {
             break;
         }
+        if step > 200 {
+            break;
+        }
+        let bytes = pick_payload_usize(pool, step, rates.len());
         let label = format_bytes(bytes as u64);
-        let prog = 0.70 + 0.28 * ((idx + 1) as f64 / up_sizes.len() as f64);
+        let n = rates.len() + 1;
+        let frac = (start.elapsed().as_secs_f64() / budget.as_secs_f64()).min(1.0);
         let _ = tx.send(SpeedTestEvent::Progress {
             phase: "upload".into(),
-            detail: format!("uploading {label}…"),
-            progress: prog,
+            detail: format!("↑ #{n} {label}…"),
+            phase_progress: frac,
         });
-        match measure_upload_mbps(&client, bytes) {
+        match measure_upload_mbps(client, bytes) {
             Ok(mbps) => {
-                up_rates.push(mbps);
+                rates.push(mbps);
                 let _ = tx.send(SpeedTestEvent::Sample {
                     kind: SampleKind::Upload,
                     value: mbps,
                 });
                 let _ = tx.send(SpeedTestEvent::Progress {
                     phase: "upload".into(),
-                    detail: format!("{label} → {mbps:.1} Mbps"),
-                    progress: prog,
+                    detail: format!("↑ #{n} {label} → {mbps:.1} Mbps"),
+                    phase_progress: frac,
                 });
             }
             Err(e) => {
                 let _ = tx.send(SpeedTestEvent::Progress {
                     phase: "upload".into(),
-                    detail: format!("{label} failed: {e}"),
-                    progress: prog,
+                    detail: format!("↑ #{n} failed: {e}"),
+                    phase_progress: frac,
                 });
+                if rates.is_empty() && step >= 4 {
+                    return Err(format!("upload probes failed: {e}"));
+                }
             }
         }
+        step += 1;
     }
-    if up_rates.is_empty() {
+    if rates.is_empty() {
         return Err("all upload probes failed".into());
     }
-    let upload_mbps = max_f64(&up_rates);
-
-    let _ = tx.send(SpeedTestEvent::Finished {
-        download_mbps,
-        upload_mbps,
-        latency_ms,
-        jitter_ms,
-        duration_secs,
+    let _ = tx.send(SpeedTestEvent::Progress {
+        phase: "upload".into(),
+        detail: format!("upload done · {} probes", rates.len()),
+        phase_progress: 1.0,
     });
-
-    let _ = started; // wall clock available if we want later
-    Ok(())
+    Ok(max_f64(&rates))
 }
 
 fn format_bytes(bytes: u64) -> String {
     if bytes >= 1_000_000 {
-        format!("{:.0} MB", bytes as f64 / 1_000_000.0)
+        let mb = bytes as f64 / 1_000_000.0;
+        if (mb - mb.round()).abs() < 0.05 {
+            format!("{:.0} MB", mb)
+        } else {
+            format!("{mb:.1} MB")
+        }
     } else {
         format!("{:.0} KB", bytes as f64 / 1_000.0)
+    }
+}
+
+/// Prefer smaller sizes early (dense graph), larger later (better peak Mbps).
+fn pick_payload(pool: &[u64], step: usize, have: usize) -> u64 {
+    if pool.is_empty() {
+        return 1_000_000;
+    }
+    if have < 4 {
+        let half = (pool.len() / 2).max(1);
+        pool[step % half]
+    } else {
+        let idx = (step % pool.len()).max(pool.len() / 3);
+        pool[idx.min(pool.len() - 1)]
+    }
+}
+
+fn pick_payload_usize(pool: &[usize], step: usize, have: usize) -> usize {
+    if pool.is_empty() {
+        return 1_000_000;
+    }
+    if have < 4 {
+        let half = (pool.len() / 2).max(1);
+        pool[step % half]
+    } else {
+        let idx = (step % pool.len()).max(pool.len() / 3);
+        pool[idx.min(pool.len() - 1)]
     }
 }
 

@@ -7,6 +7,7 @@ use ratatui::widgets::{Block, Borders, Clear, Gauge, Paragraph, Sparkline, Wrap}
 use ratatui::Frame;
 
 use crate::app::{App, BannerLevel, MetricHits, PresetHits, Screen};
+use crate::tc::{format_loss, format_ms, format_rate};
 use crate::presets::{slider_max, value_to_slider_ratio};
 use crate::tc::{format_value, Metric};
 use crate::theme;
@@ -18,6 +19,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     match app.screen {
         Screen::Main => draw_main(frame, area, app),
         Screen::SpeedTest => draw_speedtest_screen(frame, area, app),
+        Screen::History => draw_history_screen(frame, area, app),
     }
 }
 
@@ -25,25 +27,30 @@ fn draw_main(frame: &mut Frame, area: Rect, app: &mut App) {
     let root = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(5), // interface
-            Constraint::Length(5), // presets
-            Constraint::Length(7), // metrics
-            Constraint::Length(4), // applied
-            Constraint::Min(7),    // ping quality (fills rest)
-            Constraint::Length(3), // apply / reset / quit only
-            Constraint::Length(2), // banner
-            Constraint::Length(1), // keys
+            Constraint::Length(6),  // top: interfaces (left 50%) + applied (right 50%)
+            Constraint::Length(5),  // presets
+            Constraint::Length(5),  // metrics
+            Constraint::Min(10),    // path quality (taller)
+            Constraint::Length(3),  // actions
+            Constraint::Length(2),  // banner
+            Constraint::Length(1),  // keys
         ])
         .split(area);
 
-    draw_interface(frame, root[0], app);
+    // Top row: networks | applied limits
+    let top = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+        .split(root[0]);
+    draw_interface(frame, top[0], app);
+    draw_applied(frame, top[1], app);
+
     draw_presets(frame, root[1], app);
     draw_metrics(frame, root[2], app);
-    draw_applied(frame, root[3], app);
-    draw_ping_panel(frame, root[4], app);
-    draw_actions(frame, root[5], app);
-    draw_banner(frame, root[6], app);
-    draw_keys_main(frame, root[7]);
+    draw_ping_panel(frame, root[3], app);
+    draw_actions(frame, root[4], app);
+    draw_banner(frame, root[5], app);
+    draw_keys_main(frame, root[6]);
 }
 
 fn draw_interface(frame: &mut Frame, area: Rect, app: &mut App) {
@@ -223,16 +230,9 @@ fn draw_presets(frame: &mut Frame, area: Rect, app: &mut App) {
 
     let save_w: u16 = 10;
     let gap: u16 = 1;
-    // Chip height: prefer 1 row of content (+ borders drawn by chip itself → use 3 if room)
-    let chip_h: u16 = if inner.height >= 5 { 3 } else { inner.height.min(3).max(1) };
-    let row_stride = chip_h.saturating_add(0);
-    let max_rows = (inner.height / row_stride.max(1)).max(1);
-
-    // Fixed-ish width so names always fit: "N NameHere" (~12–14 cols)
-    let content_w = inner.width.saturating_sub(save_w + gap);
-    let min_chip: u16 = 12;
-    let per_row = (content_w / min_chip).max(1);
-    let chip_w = (content_w / per_row).clamp(min_chip, 18);
+    let chip_h: u16 = inner.height.min(3).max(1);
+    let content_w = inner.width.saturating_sub(save_w + gap + 1);
+    let max_rows = (inner.height / chip_h.max(1)).max(1);
 
     let mut x = inner.x;
     let mut y = inner.y;
@@ -240,17 +240,20 @@ fn draw_presets(frame: &mut Frame, area: Rect, app: &mut App) {
     app.hit_presets.clear();
 
     for (i, preset) in app.presets.iter().enumerate() {
-        let del_extra: u16 = if preset.builtin { 0 } else { 3 };
-        let need = chip_w.saturating_add(del_extra).saturating_add(1);
+        // Full name always: "1 No limits"
+        let label = format!("{} {}", i + 1, preset.name);
+        // Width = text + padding + borders (leave headroom so names never clip)
+        let load_w = (label.chars().count() as u16 + 6).clamp(14, 28);
+        let del_extra: u16 = if preset.builtin { 0 } else { 4 };
+        let need = load_w.saturating_add(del_extra).saturating_add(1);
 
-        // Wrap to next row when needed
         if x + need > inner.x + content_w {
             row += 1;
             if row >= max_rows {
                 break;
             }
             x = inner.x;
-            y = inner.y + row * row_stride;
+            y = inner.y + row * chip_h;
         }
 
         let selected = app.selected_preset == Some(i);
@@ -267,22 +270,12 @@ fn draw_presets(frame: &mut Frame, area: Rect, app: &mut App) {
             theme::WARN
         };
 
-        // leave room for × on custom presets
-        let load_w = if preset.builtin {
-            chip_w.saturating_sub(1).max(min_chip)
-        } else {
-            chip_w.saturating_sub(1).max(min_chip.saturating_sub(1))
-        };
-
         let load_rect = Rect {
             x,
             y,
             width: load_w,
             height: chip_h,
         };
-
-        // Always include the name; truncate only to the chip's inner width.
-        let label = preset_chip_label(i + 1, &preset.name, load_w);
         render_chip_button(frame, load_rect, &label, fg, theme::BG, border);
 
         let delete = if !preset.builtin {
@@ -303,7 +296,7 @@ fn draw_presets(frame: &mut Frame, area: Rect, app: &mut App) {
             x = x.saturating_add(load_w + 3 + 1);
             Some(del_rect)
         } else {
-            x = x.saturating_add(chip_w);
+            x = x.saturating_add(load_w + 1);
             None
         };
 
@@ -313,7 +306,6 @@ fn draw_presets(frame: &mut Frame, area: Rect, app: &mut App) {
         });
     }
 
-    // Save chip: top-right of the presets panel
     let save_rect = Rect {
         x: inner.x + inner.width.saturating_sub(save_w),
         y: inner.y,
@@ -331,39 +323,23 @@ fn draw_presets(frame: &mut Frame, area: Rect, app: &mut App) {
     app.hit_save_preset = save_rect;
 }
 
-/// Build a chip label like `1 Unlimited` that fits in `outer_w` columns.
-fn preset_chip_label(num: usize, name: &str, outer_w: u16) -> String {
-    // borders take 2 cols when using bordered chips
-    let inner = outer_w.saturating_sub(2).max(1) as usize;
-    let prefix = format!("{num} ");
-    if prefix.len() >= inner {
-        return format!("{num}");
-    }
-    let name_budget = inner - prefix.len();
-    let name_part: String = if name.chars().count() <= name_budget {
-        name.to_string()
-    } else if name_budget <= 1 {
-        name.chars().take(1).collect()
-    } else {
-        let take = name_budget.saturating_sub(1);
-        format!("{}…", name.chars().take(take).collect::<String>())
-    };
-    format!("{prefix}{name_part}")
-}
-
 fn draw_metrics(frame: &mut Frame, area: Rect, app: &mut App) {
+    // Single dense row: all five metrics side by side
     let cols = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([
-            Constraint::Percentage(34),
-            Constraint::Percentage(33),
-            Constraint::Percentage(33),
+            Constraint::Percentage(20),
+            Constraint::Percentage(20),
+            Constraint::Percentage(20),
+            Constraint::Percentage(20),
+            Constraint::Percentage(20),
         ])
         .split(area);
 
-    for (i, metric) in Metric::ALL.iter().enumerate() {
-        let rect = pad(cols[i], if i == 0 { 0 } else { 1 }, 0, 0, 0);
-        let hits = draw_metric_card(frame, rect, app, *metric, app.selected == *metric);
+    for (i, rect) in cols.iter().enumerate() {
+        let metric = Metric::from_index(i);
+        let r = pad(*rect, if i == 0 { 0 } else { 1 }, 0, 0, 0);
+        let hits = draw_metric_card(frame, r, app, metric, app.selected == metric);
         app.hit_metrics[i] = hits;
     }
 }
@@ -379,6 +355,8 @@ fn draw_metric_card(
         Metric::Download => theme::DOWNLOAD,
         Metric::Upload => theme::UPLOAD,
         Metric::Loss => theme::LOSS,
+        Metric::Delay => theme::ACCENT,
+        Metric::Jitter => theme::WARN,
     };
 
     let border = if selected {
@@ -392,7 +370,14 @@ fn draw_metric_card(
         theme::SURFACE
     };
 
-    let title = format!(" {} {} ", metric.icon(), metric.label());
+    // Full readable titles (icons + words)
+    let title = match metric {
+        Metric::Download => " ↓ Download ",
+        Metric::Upload => " ↑ Upload ",
+        Metric::Loss => " ⚠ Loss ",
+        Metric::Delay => " ⏱ Delay ",
+        Metric::Jitter => " ∿ Jitter ",
+    };
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(border)
@@ -412,77 +397,76 @@ fn draw_metric_card(
         ..Default::default()
     };
 
-    if inner.height < 4 || inner.width < 10 {
-        // Fallback ultra-compact view
-        let value = format_value(metric, app.metric_value(metric));
-        frame.render_widget(
-            Paragraph::new(value)
-                .alignment(Alignment::Center)
-                .style(Style::default().fg(accent).bg(bg).add_modifier(Modifier::BOLD)),
-            inner,
-        );
+    if inner.height == 0 || inner.width < 6 {
         return hits;
     }
 
-    // Compact layout (no spare Min stretch):
-    //  [ − ]  VALUE  [ + ]
-    //         unit
-    //  ───slider────────
-    //  0 … max
-    let btn_h = if inner.height >= 6 { 3 } else { 1 };
-    let body = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(btn_h), // − value +
-            Constraint::Length(1),     // unit
-            Constraint::Length(1),     // slider
-            Constraint::Length(1),     // scale labels
-            Constraint::Min(0),        // only if terminal is taller than 9
-        ])
-        .split(inner);
+    // Ultra-compact: one control row + optional slider
+    //  [−]  value  [+] unit
+    //  ──slider──
+    let has_slider = inner.height >= 2 && inner.width >= 8;
+    let body = if has_slider {
+        Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Length(1), Constraint::Length(1), Constraint::Min(0)])
+            .split(inner)
+    } else {
+        Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Min(1)])
+            .split(inner)
+    };
 
+    let unit = match metric {
+        Metric::Download | Metric::Upload => "Mbps",
+        Metric::Loss => "%",
+        Metric::Delay | Metric::Jitter => "ms",
+    };
+    // Give unit enough room for "Mbps"
+    let unit_w = (unit.chars().count() as u16 + 1).max(3);
     let value_row = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([
-            Constraint::Length(6),
-            Constraint::Min(4),
-            Constraint::Length(6),
+            Constraint::Length(3),
+            Constraint::Min(3),
+            Constraint::Length(3),
+            Constraint::Length(unit_w),
         ])
         .split(body[0]);
 
-    let dec = pad(value_row[0], 0, 1, 0, 0);
-    let inc = pad(value_row[2], 1, 0, 0, 0);
-    hits.dec = dec;
-    hits.inc = inc;
+    hits.dec = value_row[0];
+    hits.inc = value_row[2];
 
-    if btn_h >= 3 {
-        render_step_button(frame, dec, "−", accent, bg, selected);
-        render_step_button(frame, inc, "+", accent, bg, selected);
-    } else {
-        // Single-line ± when very short
-        frame.render_widget(
-            Paragraph::new(" − ")
-                .alignment(Alignment::Center)
-                .style(
-                    Style::default()
-                        .fg(accent)
-                        .bg(Color::Rgb(33, 38, 45))
-                        .add_modifier(Modifier::BOLD),
-                ),
-            dec,
-        );
-        frame.render_widget(
-            Paragraph::new(" + ")
-                .alignment(Alignment::Center)
-                .style(
-                    Style::default()
-                        .fg(accent)
-                        .bg(Color::Rgb(33, 38, 45))
-                        .add_modifier(Modifier::BOLD),
-                ),
-            inc,
-        );
-    }
+    frame.render_widget(
+        Paragraph::new("−")
+            .alignment(Alignment::Center)
+            .style(
+                Style::default()
+                    .fg(if selected {
+                        theme::TEXT_INVERSE
+                    } else {
+                        accent
+                    })
+                    .bg(if selected { accent } else { theme::BTN_STEP_BG })
+                    .add_modifier(Modifier::BOLD),
+            ),
+        value_row[0],
+    );
+    frame.render_widget(
+        Paragraph::new("+")
+            .alignment(Alignment::Center)
+            .style(
+                Style::default()
+                    .fg(if selected {
+                        theme::TEXT_INVERSE
+                    } else {
+                        accent
+                    })
+                    .bg(if selected { accent } else { theme::BTN_STEP_BG })
+                    .add_modifier(Modifier::BOLD),
+            ),
+        value_row[2],
+    );
 
     let value = format_value(metric, app.metric_value(metric));
     frame.render_widget(
@@ -497,41 +481,25 @@ fn draw_metric_card(
         value_row[1],
     );
 
-    let unit = match metric {
-        Metric::Download | Metric::Upload => "Mbps · 0 = ∞",
-        Metric::Loss => "% packet loss",
-    };
     frame.render_widget(
         Paragraph::new(unit)
-            .alignment(Alignment::Center)
+            .alignment(Alignment::Left)
             .style(Style::default().fg(theme::TEXT_MUTED).bg(bg)),
-        body[1],
+        value_row[3],
     );
 
-    let slider_area = pad(body[2], 1, 1, 0, 0);
-    hits.slider = slider_area;
-    draw_slider(
-        frame,
-        slider_area,
-        metric,
-        app.metric_value(metric),
-        accent,
-        bg,
-        selected || app.dragging == Some(metric),
-    );
-
-    let max_label = match metric {
-        Metric::Download | Metric::Upload => {
-            format!("0 ──────── {} Mbps", slider_max(metric) as i64)
-        }
-        Metric::Loss => "0% ────────────── 100%".into(),
-    };
-    frame.render_widget(
-        Paragraph::new(max_label)
-            .alignment(Alignment::Center)
-            .style(Style::default().fg(theme::TEXT_MUTED).bg(bg)),
-        body[3],
-    );
+    if has_slider {
+        hits.slider = body[1];
+        draw_slider(
+            frame,
+            body[1],
+            metric,
+            app.metric_value(metric),
+            accent,
+            bg,
+            selected || app.dragging == Some(metric),
+        );
+    }
 
     hits
 }
@@ -589,33 +557,110 @@ fn draw_slider(
     let _ = bg;
 }
 
-fn render_step_button(
-    frame: &mut Frame,
-    area: Rect,
-    label: &str,
-    accent: Color,
-    bg: Color,
-    selected: bool,
-) {
-    let border = if selected { accent } else { theme::BORDER };
+/// Visual style for on-screen buttons.
+#[derive(Clone, Copy)]
+enum BtnStyle {
+    /// Filled green — Apply / Run
+    Primary,
+    /// Red outline on dark red tint — Reset
+    Danger,
+    /// Blue filled tint — Speed test / accent CTAs
+    Accent,
+    /// Neutral grey — Quit / Back
+    Ghost,
+    /// Preset chips / small toggles
+    Chip { fg: Color, active: bool, danger: bool },
+}
+
+fn render_btn(frame: &mut Frame, area: Rect, label: &str, style: BtnStyle) {
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
+
+    let (fg, bg, border, bold) = match style {
+        BtnStyle::Primary => (
+            theme::TEXT_INVERSE,
+            theme::BTN_PRIMARY_BG,
+            theme::BTN_PRIMARY_BORDER,
+            true,
+        ),
+        BtnStyle::Danger => (
+            theme::ERROR,
+            theme::BTN_DANGER_BG,
+            theme::BTN_DANGER_BORDER,
+            true,
+        ),
+        BtnStyle::Accent => (
+            theme::ACCENT,
+            theme::BTN_ACCENT_BG,
+            theme::BTN_ACCENT_BORDER,
+            true,
+        ),
+        BtnStyle::Ghost => (
+            theme::TEXT_DIM,
+            theme::BTN_GHOST_BG,
+            theme::BTN_GHOST_BORDER,
+            true,
+        ),
+        BtnStyle::Chip { fg, active, danger } => {
+            if danger {
+                (theme::ERROR, theme::BTN_DANGER_BG, theme::ERROR, true)
+            } else if active {
+                (fg, theme::BTN_CHIP_ACTIVE_BG, fg, true)
+            } else {
+                (fg, theme::BTN_CHIP_BG, theme::BORDER, true)
+            }
+        }
+    };
+
     let block = Block::default()
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(border))
-        .style(Style::default().bg(Color::Rgb(33, 38, 45)));
+        .border_style(Style::default().fg(border).add_modifier(if matches!(
+            style,
+            BtnStyle::Primary | BtnStyle::Accent
+        ) {
+            Modifier::BOLD
+        } else {
+            Modifier::empty()
+        }))
+        .style(Style::default().bg(bg));
     let inner = block.inner(area);
     frame.render_widget(block, area);
-    frame.render_widget(
-        Paragraph::new(label)
-            .alignment(Alignment::Center)
-            .style(
-                Style::default()
-                    .fg(accent)
-                    .bg(Color::Rgb(33, 38, 45))
-                    .add_modifier(Modifier::BOLD),
-            ),
-        inner,
-    );
-    let _ = bg;
+
+    // Pad short labels so chips don't look empty.
+    let text = if area.width >= 6 && label.chars().count() <= 2 {
+        format!(" {label} ")
+    } else {
+        format!(" {label} ")
+    };
+
+    let mut style_text = Style::default().fg(fg).bg(bg);
+    if bold {
+        style_text = style_text.add_modifier(Modifier::BOLD);
+    }
+
+    // Vertically center when button is tall.
+    if inner.height >= 3 {
+        let mid = Rect {
+            x: inner.x,
+            y: inner.y + inner.height / 2,
+            width: inner.width,
+            height: 1,
+        };
+        frame.render_widget(
+            Paragraph::new(text)
+                .alignment(Alignment::Center)
+                .style(style_text),
+            mid,
+        );
+    } else {
+        frame.render_widget(
+            Paragraph::new(text)
+                .alignment(Alignment::Center)
+                .style(style_text),
+            inner,
+        );
+    }
 }
 
 fn render_chip_button(
@@ -623,23 +668,26 @@ fn render_chip_button(
     area: Rect,
     label: &str,
     fg: Color,
-    bg: Color,
+    _bg: Color,
     border: Color,
 ) {
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(border))
-        .style(Style::default().bg(bg));
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
-    frame.render_widget(
-        Paragraph::new(label)
-            .alignment(Alignment::Center)
-            .style(Style::default().fg(fg).bg(bg).add_modifier(Modifier::BOLD)),
-        inner,
-    );
+    // Infer chip state from colors callers already pass.
+    let active = border == theme::ACCENT || border == fg && fg == theme::ACCENT;
+    let danger = fg == theme::ERROR || border == theme::ERROR || label.trim() == "×";
+    let success_chip = fg == theme::SUCCESS || label.contains("Save");
+    let style = if success_chip {
+        BtnStyle::Primary
+    } else {
+        BtnStyle::Chip {
+            fg: if danger { theme::ERROR } else { fg },
+            active: active && !danger,
+            danger,
+        }
+    };
+    render_btn(frame, area, label, style);
 }
 
+/// Current applied limits (right half of top row).
 fn draw_applied(frame: &mut Frame, area: Rect, app: &App) {
     let active = app.applied.is_active();
     let pending = app.draft_differs_from_applied();
@@ -649,9 +697,9 @@ fn draw_applied(frame: &mut Frame, area: Rect, app: &App) {
         theme::BORDER
     };
     let title = if active {
-        " APPLIED LIMITS  ·  ACTIVE "
+        " CURRENT APPLIED LIMITS  ·  ACTIVE "
     } else {
-        " APPLIED LIMITS  ·  NONE "
+        " CURRENT APPLIED LIMITS  ·  NONE "
     };
 
     let block = Block::default()
@@ -661,7 +709,11 @@ fn draw_applied(frame: &mut Frame, area: Rect, app: &App) {
         .title(Span::styled(
             title,
             Style::default()
-                .fg(if active { theme::SUCCESS } else { theme::TEXT_DIM })
+                .fg(if active {
+                    theme::SUCCESS
+                } else {
+                    theme::TEXT_DIM
+                })
                 .add_modifier(Modifier::BOLD),
         ));
     let inner = block.inner(area);
@@ -678,46 +730,25 @@ fn draw_applied(frame: &mut Frame, area: Rect, app: &App) {
 
     let rows = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(1), Constraint::Min(1)])
+        .constraints([
+            Constraint::Length(1), // status
+            Constraint::Length(1), // download / upload
+            Constraint::Length(1), // loss / delay / jitter
+            Constraint::Min(1),    // draft note
+        ])
         .split(inner);
 
-    // Big status line
     let status = if active {
         Line::from(vec![
             Span::styled(
                 " ● ENFORCED ",
                 Style::default()
                     .fg(theme::SUCCESS)
-                    .bg(theme::SURFACE)
                     .add_modifier(Modifier::BOLD),
             ),
             Span::styled(
-                format!(" on {iface}  "),
-                Style::default().fg(theme::TEXT).bg(theme::SURFACE),
-            ),
-            Span::styled(
-                format!("↓ {}  ", crate::tc::format_rate(app.applied.download_mbps)),
-                Style::default()
-                    .fg(theme::DOWNLOAD)
-                    .bg(theme::SURFACE)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(
-                format!("↑ {}  ", crate::tc::format_rate(app.applied.upload_mbps)),
-                Style::default()
-                    .fg(theme::UPLOAD)
-                    .bg(theme::SURFACE)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(
-                format!(
-                    "loss {} ",
-                    crate::tc::format_loss(app.applied.loss_percent)
-                ),
-                Style::default()
-                    .fg(theme::LOSS)
-                    .bg(theme::SURFACE)
-                    .add_modifier(Modifier::BOLD),
+                format!("on {iface}"),
+                Style::default().fg(theme::TEXT),
             ),
         ])
     } else {
@@ -726,12 +757,11 @@ fn draw_applied(frame: &mut Frame, area: Rect, app: &App) {
                 " ○ NO LIMITS ",
                 Style::default()
                     .fg(theme::TEXT_MUTED)
-                    .bg(theme::SURFACE)
                     .add_modifier(Modifier::BOLD),
             ),
             Span::styled(
-                format!(" on {iface}  ·  traffic is unlimited "),
-                Style::default().fg(theme::TEXT_DIM).bg(theme::SURFACE),
+                format!("on {iface}  ·  unlimited"),
+                Style::default().fg(theme::TEXT_DIM),
             ),
         ])
     };
@@ -741,46 +771,97 @@ fn draw_applied(frame: &mut Frame, area: Rect, app: &App) {
     );
 
     if rows[1].height > 0 {
+        frame.render_widget(
+            Paragraph::new(Line::from(vec![
+                Span::styled(" ↓ Download  ", Style::default().fg(theme::TEXT_MUTED)),
+                Span::styled(
+                    format!("{:<12}", format_rate(app.applied.download_mbps)),
+                    Style::default()
+                        .fg(theme::DOWNLOAD)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(" ↑ Upload  ", Style::default().fg(theme::TEXT_MUTED)),
+                Span::styled(
+                    format_rate(app.applied.upload_mbps),
+                    Style::default()
+                        .fg(theme::UPLOAD)
+                        .add_modifier(Modifier::BOLD),
+                ),
+            ]))
+            .style(Style::default().bg(theme::SURFACE)),
+            rows[1],
+        );
+    }
+
+    if rows[2].height > 0 {
+        frame.render_widget(
+            Paragraph::new(Line::from(vec![
+                Span::styled(" ⚠ Loss  ", Style::default().fg(theme::TEXT_MUTED)),
+                Span::styled(
+                    format!("{:<8}", format_loss(app.applied.loss_percent)),
+                    Style::default().fg(theme::LOSS).add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(" ⏱ Delay  ", Style::default().fg(theme::TEXT_MUTED)),
+                Span::styled(
+                    format!("{}ms  ", format_ms(app.applied.delay_ms)),
+                    Style::default()
+                        .fg(theme::ACCENT)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(" ∿ Jitter  ", Style::default().fg(theme::TEXT_MUTED)),
+                Span::styled(
+                    format!("{}ms", format_ms(app.applied.jitter_ms)),
+                    Style::default().fg(theme::WARN).add_modifier(Modifier::BOLD),
+                ),
+            ]))
+            .style(Style::default().bg(theme::SURFACE)),
+            rows[2],
+        );
+    }
+
+    if rows[3].height > 0 {
         let draft_note = if pending {
             format!(
-                " draft (not applied): ↓ {}  ↑ {}  loss {}   → press Apply [a]",
-                crate::tc::format_rate(if app.download > 0.0 {
-                    app.download
-                } else {
-                    0.0
-                }),
-                crate::tc::format_rate(if app.upload > 0.0 {
-                    app.upload
-                } else {
-                    0.0
-                }),
-                crate::tc::format_loss(app.loss),
+                " draft differs → Apply [a] or Validate [v]  (↓{} ↑{} loss{} dly{}±{})",
+                format_rate(app.download),
+                format_rate(app.upload),
+                format_loss(app.loss),
+                format_ms(app.delay),
+                format_ms(app.jitter),
             )
         } else {
-            " draft matches applied  ·  change values above then Apply".into()
+            " draft matches applied".into()
         };
         frame.render_widget(
-            Paragraph::new(draft_note).style(Style::default().fg(if pending {
-                theme::WARN
-            } else {
-                theme::TEXT_MUTED
-            }).bg(theme::SURFACE)),
-            rows[1],
+            Paragraph::new(draft_note).style(
+                Style::default()
+                    .fg(if pending {
+                        theme::WARN
+                    } else {
+                        theme::TEXT_MUTED
+                    })
+                    .bg(theme::SURFACE),
+            ),
+            rows[3],
         );
     }
 }
 
-/// Path quality only (ICMP). Speed test lives on its own full screen.
+/// Path quality (ICMP ping). Clear dual graphs: packet loss + latency.
 fn draw_ping_panel(frame: &mut Frame, area: Rect, app: &mut App) {
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(theme::BORDER))
         .style(Style::default().bg(theme::SURFACE))
         .title(Span::styled(
-            " PATH QUALITY  ·  ping ",
+            " PATH QUALITY  ·  ICMP ping to 1.1.1.1 ",
             Style::default()
                 .fg(theme::TEXT_DIM)
                 .add_modifier(Modifier::BOLD),
+        ))
+        .title_bottom(Span::styled(
+            " left = packet loss over time  ·  right = latency (RTT) over time ",
+            Style::default().fg(theme::TEXT_MUTED),
         ));
     let inner = block.inner(area);
     frame.render_widget(block, area);
@@ -792,97 +873,162 @@ fn draw_ping_panel(frame: &mut Frame, area: Rect, app: &mut App) {
     let body = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Min(2),    // loss spark + stats
-            Constraint::Length(3), // open speed test button
+            Constraint::Min(3),    // dual graphs
+            Constraint::Length(1), // summary line
+            Constraint::Length(3), // speed test button
         ])
         .split(inner);
 
-    let spark_area = body[0];
-    let spark_h = spark_area.height.saturating_sub(2).max(1);
-    let spark_rows = Layout::default()
+    // Two clear panels side by side
+    let halves = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+        .split(body[0]);
+
+    // ── Packet loss ───────────────────────────────────────────────
+    let (loss_label, loss_color) = crate::monitor::loss_quality(app.ping.loss_percent);
+    let ok = app.ping.ok_count();
+    let n = app.ping.samples;
+    draw_quality_graph(
+        frame,
+        halves[0],
+        "Packet loss",
+        &format!("{:.0}%", app.ping.loss_percent),
+        &format!("{loss_label}  ·  {ok}/{n} pings ok"),
+        "0% ──────── 100%",
+        &app.history.loss_slice(),
+        1000, // max = 100.0% * 10
+        loss_color,
+        true, // force max scale to 100%
+    );
+
+    // ── Latency (RTT) ─────────────────────────────────────────────
+    let (rtt_label, rtt_color) = crate::monitor::rtt_quality(app.ping.last_rtt_ms);
+    let rtt_txt = app
+        .ping
+        .last_rtt_ms
+        .map(|m| format!("{m:.0} ms"))
+        .unwrap_or_else(|| "— ms".into());
+    let rtt_data = app.history.rtt_slice();
+    let rtt_max = rtt_data.iter().copied().max().unwrap_or(1).max(1);
+    draw_quality_graph(
+        frame,
+        halves[1],
+        "Latency (RTT)",
+        &rtt_txt,
+        rtt_label,
+        "lower is better · dips = timeouts",
+        &rtt_data,
+        rtt_max,
+        rtt_color,
+        false,
+    );
+
+    // ── Summary ───────────────────────────────────────────────────
+    let summary = format!(
+        " Live traffic on {}:  ↓ {:.1} Mbps download   ↑ {:.1} Mbps upload   ·   ping host {}",
+        app.current_iface(),
+        app.throughput.down_mbps,
+        app.throughput.up_mbps,
+        app.ping.host,
+    );
+    frame.render_widget(
+        Paragraph::new(summary).style(Style::default().fg(theme::TEXT_MUTED).bg(theme::SURFACE)),
+        body[1],
+    );
+
+    // ── Speed test CTA ────────────────────────────────────────────
+    let btn = pad(body[2], 1, 1, 0, 0);
+    app.hit_open_speedtest = btn;
+    let (label, style) = if app.speedtest_running {
+        (
+            "⚡  Speed test running…  [t] open",
+            BtnStyle::Chip {
+                fg: theme::WARN,
+                active: true,
+                danger: false,
+            },
+        )
+    } else if app.last_speedtest.is_some() {
+        (
+            "⚡  Cloudflare Speed Test  [t]  ·  view / retest",
+            BtnStyle::Accent,
+        )
+    } else {
+        ("⚡  Cloudflare Speed Test  [t]", BtnStyle::Accent)
+    };
+    render_btn(frame, btn, label, style);
+}
+
+/// One labeled quality card: title, big value, status, sparkline, scale hint.
+fn draw_quality_graph(
+    frame: &mut Frame,
+    area: Rect,
+    title: &str,
+    big_value: &str,
+    status: &str,
+    scale_hint: &str,
+    data: &[u64],
+    max: u64,
+    color: Color,
+    fixed_max: bool,
+) {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(color))
+        .title(Span::styled(
+            format!(" {title} "),
+            Style::default().fg(color).add_modifier(Modifier::BOLD),
+        ))
+        .style(Style::default().bg(theme::BG));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    if inner.height == 0 {
+        return;
+    }
+
+    let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(spark_h),
-            Constraint::Length(1),
-            Constraint::Min(0),
+            Constraint::Length(1), // big value + status
+            Constraint::Min(1),    // sparkline
+            Constraint::Length(1), // scale
         ])
-        .split(spark_area);
-
-    let loss_data = app.history.loss_slice();
-    let spark_data: Vec<u64> = if loss_data.is_empty() {
-        vec![0]
-    } else {
-        loss_data
-    };
-    let max = spark_data.iter().copied().max().unwrap_or(1).max(1);
-
-    let spark_row = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Length(8),
-            Constraint::Min(10),
-            Constraint::Length(18),
-        ])
-        .split(spark_rows[0]);
+        .split(inner);
 
     frame.render_widget(
-        Paragraph::new(" LOSS")
-            .style(
+        Paragraph::new(Line::from(vec![
+            Span::styled(
+                format!(" {big_value}  "),
                 Style::default()
-                    .fg(theme::LOSS)
-                    .bg(theme::SURFACE)
+                    .fg(color)
                     .add_modifier(Modifier::BOLD),
             ),
-        spark_row[0],
+            Span::styled(status, Style::default().fg(theme::TEXT_MUTED)),
+        ]))
+        .style(Style::default().bg(theme::BG)),
+        rows[0],
     );
+
+    let spark_data: Vec<u64> = if data.is_empty() { vec![0] } else { data.to_vec() };
+    let max = if fixed_max {
+        max.max(1)
+    } else {
+        spark_data.iter().copied().max().unwrap_or(1).max(1)
+    };
     frame.render_widget(
         Sparkline::default()
             .data(&spark_data)
             .max(max)
-            .style(Style::default().fg(theme::LOSS).bg(theme::SURFACE)),
-        spark_row[1],
-    );
-    frame.render_widget(
-        Paragraph::new(format!("{:.0}%", app.ping.loss_percent))
-            .alignment(Alignment::Right)
-            .style(
-                Style::default()
-                    .fg(theme::LOSS)
-                    .bg(theme::SURFACE)
-                    .add_modifier(Modifier::BOLD),
-            ),
-        spark_row[2],
+            .style(Style::default().fg(color).bg(theme::BG)),
+        rows[1],
     );
 
-    let rtt = app
-        .ping
-        .last_rtt_ms
-        .map(|m| format!("{m:.0} ms"))
-        .unwrap_or_else(|| "—".into());
-    let stats = format!(
-        " host {}  ·  rtt {}  ·  window {} samples  ·  live ↓ {:.1} / ↑ {:.1} Mbps",
-        app.ping.host,
-        rtt,
-        app.ping.samples,
-        app.throughput.down_mbps,
-        app.throughput.up_mbps,
-    );
     frame.render_widget(
-        Paragraph::new(stats).style(Style::default().fg(theme::TEXT_MUTED).bg(theme::SURFACE)),
-        spark_rows[1],
+        Paragraph::new(format!(" {scale_hint}"))
+            .style(Style::default().fg(theme::TEXT_MUTED).bg(theme::BG)),
+        rows[2],
     );
-
-    // Dedicated speed-test entry (not next to Apply/Reset)
-    let btn = pad(body[1], 1, 1, 0, 0);
-    app.hit_open_speedtest = btn;
-    let (label, fg) = if app.speedtest_running {
-        ("⚡  Speed test running…  [t] open", theme::WARN)
-    } else if app.last_speedtest.is_some() {
-        ("⚡  Cloudflare Speed Test  [t]  ·  view report / retest", theme::ACCENT)
-    } else {
-        ("⚡  Cloudflare Speed Test  [t]", theme::ACCENT)
-    };
-    render_button(frame, btn, label, fg, theme::BG);
 }
 
 fn draw_speedtest_screen(frame: &mut Frame, area: Rect, app: &mut App) {
@@ -897,7 +1043,7 @@ fn draw_speedtest_screen(frame: &mut Frame, area: Rect, app: &mut App) {
                 .add_modifier(Modifier::BOLD),
         ))
         .title_bottom(Span::styled(
-            " Esc/b back  ·  Enter/t run  ·  ←→ duration ",
+            " Esc/b back  ·  Enter run all  ·  ←→ sec/phase  ·  ↺ under graph re-runs that test ",
             Style::default().fg(theme::TEXT_MUTED),
         ));
     let inner = block.inner(area);
@@ -906,14 +1052,15 @@ fn draw_speedtest_screen(frame: &mut Frame, area: Rect, app: &mut App) {
         return;
     }
 
+    let d = app.speedtest_duration_secs;
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(3), // controls
             Constraint::Length(1), // status
-            Constraint::Length(1), // progress bar (compact)
-            Constraint::Min(6),    // graphs (main focus)
-            Constraint::Length(3), // compact results strip
+            Constraint::Length(3), // 3 phase progress gauges
+            Constraint::Min(6),    // graphs + re-run
+            Constraint::Length(3), // summary strip
         ])
         .split(inner);
 
@@ -921,12 +1068,13 @@ fn draw_speedtest_screen(frame: &mut Frame, area: Rect, app: &mut App) {
     let ctrl = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([
-            Constraint::Length(12),
+            Constraint::Length(14),
             Constraint::Length(5),
-            Constraint::Length(8),
+            Constraint::Length(7),
             Constraint::Length(5),
+            Constraint::Length(16), // "~15s total"
             Constraint::Length(2),
-            Constraint::Length(12),
+            Constraint::Length(14),
             Constraint::Length(2),
             Constraint::Length(10),
             Constraint::Min(0),
@@ -934,7 +1082,7 @@ fn draw_speedtest_screen(frame: &mut Frame, area: Rect, app: &mut App) {
         .split(rows[0]);
 
     frame.render_widget(
-        Paragraph::new(" Duration")
+        Paragraph::new(" Sec/phase")
             .style(Style::default().fg(theme::TEXT_DIM).bg(theme::SURFACE)),
         ctrl[0],
     );
@@ -953,7 +1101,7 @@ fn draw_speedtest_screen(frame: &mut Frame, area: Rect, app: &mut App) {
         },
     );
     frame.render_widget(
-        Paragraph::new(format!("{}s", app.speedtest_duration_secs))
+        Paragraph::new(format!("{d}s"))
             .alignment(Alignment::Center)
             .style(
                 Style::default()
@@ -980,29 +1128,29 @@ fn draw_speedtest_screen(frame: &mut Frame, area: Rect, app: &mut App) {
             theme::ACCENT
         },
     );
-
-    app.hit_st_run = ctrl[5];
-    app.hit_st_back = ctrl[7];
-    render_button(
-        frame,
-        ctrl[5],
-        if app.speedtest_running {
-            "… Run"
-        } else {
-            "▶ Run"
-        },
-        if app.speedtest_running {
-            theme::WARN
-        } else {
-            theme::SUCCESS
-        },
-        if app.speedtest_running {
-            theme::SURFACE
-        } else {
-            Color::Rgb(35, 134, 54)
-        },
+    frame.render_widget(
+        Paragraph::new(format!("×3 ≈ {}s", d * 3))
+            .style(Style::default().fg(theme::TEXT_MUTED).bg(theme::SURFACE)),
+        ctrl[4],
     );
-    render_button(frame, ctrl[7], "← Back", theme::TEXT_DIM, theme::BG);
+
+    app.hit_st_run = ctrl[6];
+    app.hit_st_back = ctrl[8];
+    if app.speedtest_running {
+        render_btn(
+            frame,
+            ctrl[6],
+            "… Running",
+            BtnStyle::Chip {
+                fg: theme::WARN,
+                active: true,
+                danger: false,
+            },
+        );
+    } else {
+        render_btn(frame, ctrl[6], "▶  Run all", BtnStyle::Primary);
+    }
+    render_btn(frame, ctrl[8], "← Back", BtnStyle::Ghost);
 
     // ── status + thin progress ────────────────────────────────────
     let phase = if app.speedtest_running {
@@ -1010,38 +1158,60 @@ fn draw_speedtest_screen(frame: &mut Frame, area: Rect, app: &mut App) {
     } else if let Some(err) = &app.speedtest_error {
         format!(" ✗ {err} ")
     } else if app.last_speedtest.is_some() {
-        " complete — Run to retest ".into()
+        " complete — Run all or ↺ under a graph ".into()
     } else {
-        " set duration, then Run ".into()
+        format!(" each phase runs {d}s (latency + download + upload ≈ {}s) ", d * 3)
     };
     frame.render_widget(
-        Paragraph::new(phase).style(Style::default().fg(
-            if app.speedtest_error.is_some() {
-                theme::ERROR
-            } else {
-                theme::TEXT_MUTED
-            },
-        ).bg(theme::SURFACE)),
+        Paragraph::new(phase).style(
+            Style::default()
+                .fg(if app.speedtest_error.is_some() {
+                    theme::ERROR
+                } else {
+                    theme::TEXT_MUTED
+                })
+                .bg(theme::SURFACE),
+        ),
         rows[1],
     );
 
-    let ratio = if app.speedtest_running {
-        app.speedtest_progress.clamp(0.0, 1.0)
-    } else if app.last_speedtest.is_some() && app.speedtest_error.is_none() {
-        1.0
-    } else {
-        0.0
-    };
-    frame.render_widget(
-        Gauge::default()
-            .gauge_style(Style::default().fg(theme::ACCENT).bg(Color::Rgb(30, 35, 42)))
-            .ratio(ratio)
-            .label(format!("{:.0}%", ratio * 100.0)),
-        rows[2],
+    // Three independent progress bars (latency / download / upload)
+    let prog_cols = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Percentage(34),
+            Constraint::Percentage(33),
+            Constraint::Percentage(33),
+        ])
+        .split(rows[2]);
+
+    draw_phase_progress(
+        frame,
+        prog_cols[0],
+        "↓ down",
+        app.st_prog_down,
+        theme::DOWNLOAD,
+        app.speedtest_running && app.speedtest_phase == "download",
+    );
+    draw_phase_progress(
+        frame,
+        prog_cols[1],
+        "↑ up",
+        app.st_prog_up,
+        theme::UPLOAD,
+        app.speedtest_running && app.speedtest_phase == "upload",
+    );
+    draw_phase_progress(
+        frame,
+        prog_cols[2],
+        "lat",
+        app.st_prog_lat,
+        theme::ACCENT,
+        app.speedtest_running && app.speedtest_phase == "latency",
     );
 
-    // ── graphs (main area) ────────────────────────────────────────
-    let graphs = Layout::default()
+    // ── graphs + per-test re-run ──────────────────────────────────
+    let cols = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([
             Constraint::Percentage(34),
@@ -1050,56 +1220,70 @@ fn draw_speedtest_screen(frame: &mut Frame, area: Rect, app: &mut App) {
         ])
         .split(rows[3]);
 
-    // While running (or after reset), only live samples — never mix with a previous report.
-    let (down_s, up_s, lat_s, down_v, up_v, lat_v) = if app.speedtest_running
-        || app.last_speedtest.is_none()
-    {
-        (
-            app.st_down_samples.as_slice(),
-            app.st_up_samples.as_slice(),
-            app.st_lat_samples.as_slice(),
-            app.st_down_samples
-                .iter()
-                .cloned()
-                .fold(0.0_f64, f64::max),
-            app.st_up_samples.iter().cloned().fold(0.0_f64, f64::max),
-            app.st_lat_samples.last().copied().unwrap_or(0.0),
-        )
-    } else if let Some(r) = &app.last_speedtest {
-        (
-            if app.st_down_samples.is_empty() {
-                r.down_samples.as_slice()
-            } else {
-                app.st_down_samples.as_slice()
-            },
-            if app.st_up_samples.is_empty() {
-                r.up_samples.as_slice()
-            } else {
-                app.st_up_samples.as_slice()
-            },
-            if app.st_lat_samples.is_empty() {
-                r.lat_samples.as_slice()
-            } else {
-                app.st_lat_samples.as_slice()
-            },
-            r.download_mbps,
-            r.upload_mbps,
-            r.latency_ms,
-        )
+    // Prefer live samples; fall back to stored report samples per series.
+    let down_s = if !app.st_down_samples.is_empty() {
+        app.st_down_samples.as_slice()
     } else {
-        (
-            app.st_down_samples.as_slice(),
-            app.st_up_samples.as_slice(),
-            app.st_lat_samples.as_slice(),
-            0.0,
-            0.0,
-            0.0,
-        )
+        app.last_speedtest
+            .as_ref()
+            .map(|r| r.down_samples.as_slice())
+            .unwrap_or(&[])
     };
+    let up_s = if !app.st_up_samples.is_empty() {
+        app.st_up_samples.as_slice()
+    } else {
+        app.last_speedtest
+            .as_ref()
+            .map(|r| r.up_samples.as_slice())
+            .unwrap_or(&[])
+    };
+    let lat_s = if !app.st_lat_samples.is_empty() {
+        app.st_lat_samples.as_slice()
+    } else {
+        app.last_speedtest
+            .as_ref()
+            .map(|r| r.lat_samples.as_slice())
+            .unwrap_or(&[])
+    };
+    let down_v = if !app.st_down_samples.is_empty() {
+        app.st_down_samples.iter().cloned().fold(0.0_f64, f64::max)
+    } else {
+        app.last_speedtest
+            .as_ref()
+            .map(|r| r.download_mbps)
+            .unwrap_or(0.0)
+    };
+    let up_v = if !app.st_up_samples.is_empty() {
+        app.st_up_samples.iter().cloned().fold(0.0_f64, f64::max)
+    } else {
+        app.last_speedtest
+            .as_ref()
+            .map(|r| r.upload_mbps)
+            .unwrap_or(0.0)
+    };
+    let lat_v = if !app.st_lat_samples.is_empty() {
+        // median-ish: use last sample while running; report uses true median on finish
+        app.st_lat_samples.last().copied().unwrap_or(0.0)
+    } else {
+        app.last_speedtest
+            .as_ref()
+            .map(|r| r.latency_ms)
+            .unwrap_or(0.0)
+    };
+
+    let col_parts = |col: Rect| {
+        Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Min(4), Constraint::Length(3)])
+            .split(col)
+    };
+    let d_parts = col_parts(cols[0]);
+    let u_parts = col_parts(cols[1]);
+    let l_parts = col_parts(cols[2]);
 
     draw_st_graph(
         frame,
-        graphs[0],
+        d_parts[0],
         "↓ DOWNLOAD",
         down_s,
         down_v,
@@ -1109,7 +1293,7 @@ fn draw_speedtest_screen(frame: &mut Frame, area: Rect, app: &mut App) {
     );
     draw_st_graph(
         frame,
-        graphs[1],
+        u_parts[0],
         "↑ UPLOAD",
         up_s,
         up_v,
@@ -1119,7 +1303,7 @@ fn draw_speedtest_screen(frame: &mut Frame, area: Rect, app: &mut App) {
     );
     draw_st_graph(
         frame,
-        graphs[2],
+        l_parts[0],
         "LATENCY",
         lat_s,
         lat_v,
@@ -1127,6 +1311,44 @@ fn draw_speedtest_screen(frame: &mut Frame, area: Rect, app: &mut App) {
         theme::ACCENT,
         true,
     );
+
+    let rerun_disabled = app.speedtest_running;
+    let down_btn = pad(d_parts[1], 1, 1, 0, 0);
+    let up_btn = pad(u_parts[1], 1, 1, 0, 0);
+    let lat_btn = pad(l_parts[1], 1, 1, 0, 0);
+    app.hit_st_rerun_down = if rerun_disabled {
+        Rect::default()
+    } else {
+        down_btn
+    };
+    app.hit_st_rerun_up = if rerun_disabled {
+        Rect::default()
+    } else {
+        up_btn
+    };
+    app.hit_st_rerun_lat = if rerun_disabled {
+        Rect::default()
+    } else {
+        lat_btn
+    };
+
+    let rerun_style = if rerun_disabled {
+        BtnStyle::Ghost
+    } else {
+        BtnStyle::Accent
+    };
+    render_btn(
+        frame,
+        down_btn,
+        &format!("↺  ↓ {d}s"),
+        if rerun_disabled {
+            BtnStyle::Ghost
+        } else {
+            BtnStyle::Accent
+        },
+    );
+    render_btn(frame, up_btn, &format!("↺  ↑ {d}s"), rerun_style);
+    render_btn(frame, lat_btn, &format!("↺  lat {d}s"), rerun_style);
 
     // ── compact results strip ─────────────────────────────────────
     let strip = Block::default()
@@ -1202,6 +1424,42 @@ fn draw_speedtest_screen(frame: &mut Frame, area: Rect, app: &mut App) {
             strip_inner,
         );
     }
+}
+
+fn draw_phase_progress(
+    frame: &mut Frame,
+    area: Rect,
+    label: &str,
+    progress: f64,
+    color: Color,
+    active: bool,
+) {
+    let ratio = progress.clamp(0.0, 1.0);
+    let border = if active {
+        color
+    } else if ratio >= 1.0 {
+        theme::SUCCESS
+    } else {
+        theme::BORDER
+    };
+    let gauge = Gauge::default()
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(border).add_modifier(if active {
+                    Modifier::BOLD
+                } else {
+                    Modifier::empty()
+                }))
+                .title(Span::styled(
+                    format!(" {label} "),
+                    Style::default().fg(color).add_modifier(Modifier::BOLD),
+                )),
+        )
+        .gauge_style(Style::default().fg(color).bg(Color::Rgb(30, 35, 42)))
+        .ratio(ratio)
+        .label(format!("{:.0}%", ratio * 100.0));
+    frame.render_widget(gauge, area);
 }
 
 /// Tall sparkline card for one speed-test series.
@@ -1314,59 +1572,33 @@ fn draw_actions(frame: &mut Frame, area: Rect, app: &mut App) {
     let chunks = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([
-            Constraint::Percentage(34),
-            Constraint::Percentage(33),
-            Constraint::Percentage(33),
+            Constraint::Percentage(22),
+            Constraint::Percentage(22),
+            Constraint::Percentage(22),
+            Constraint::Percentage(17),
+            Constraint::Percentage(17),
         ])
         .split(area);
 
     let apply_area = pad(chunks[0], 0, 1, 0, 0);
-    let reset_area = pad(chunks[1], 0, 1, 0, 0);
-    let quit_area = pad(chunks[2], 0, 0, 0, 0);
+    let validate_area = pad(chunks[1], 0, 1, 0, 0);
+    let reset_area = pad(chunks[2], 0, 1, 0, 0);
+    let history_area = pad(chunks[3], 0, 1, 0, 0);
+    let quit_area = pad(chunks[4], 0, 0, 0, 0);
 
     app.hit_apply = apply_area;
+    app.hit_validate = validate_area;
     app.hit_reset = reset_area;
+    app.hit_history = history_area;
     app.hit_quit = quit_area;
-    // Clear speed-test hits from main action row
     app.hit_st_run = Rect::default();
     app.hit_st_back = Rect::default();
 
-    render_button(
-        frame,
-        apply_area,
-        "▶ Apply [a]",
-        theme::SUCCESS,
-        Color::Rgb(35, 134, 54),
-    );
-    render_button(
-        frame,
-        reset_area,
-        "↺ Reset [r]",
-        theme::ERROR,
-        theme::SURFACE,
-    );
-    render_button(
-        frame,
-        quit_area,
-        "✕ Quit [q]",
-        theme::TEXT_DIM,
-        theme::SURFACE,
-    );
-}
-
-fn render_button(frame: &mut Frame, area: Rect, label: &str, fg: Color, bg: Color) {
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(fg))
-        .style(Style::default().bg(bg));
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
-    frame.render_widget(
-        Paragraph::new(label)
-            .alignment(Alignment::Center)
-            .style(Style::default().fg(fg).bg(bg).add_modifier(Modifier::BOLD)),
-        inner,
-    );
+    render_btn(frame, apply_area, "▶ Apply [a]", BtnStyle::Primary);
+    render_btn(frame, validate_area, "✓ Valid [v]", BtnStyle::Accent);
+    render_btn(frame, reset_area, "↺ Reset [r]", BtnStyle::Danger);
+    render_btn(frame, history_area, "Hist [h]", BtnStyle::Ghost);
+    render_btn(frame, quit_area, "✕ Quit [q]", BtnStyle::Ghost);
 }
 
 fn draw_banner(frame: &mut Frame, area: Rect, app: &App) {
@@ -1395,16 +1627,16 @@ fn draw_banner(frame: &mut Frame, area: Rect, app: &App) {
 
 fn draw_keys_main(frame: &mut Frame, area: Rect) {
     let line = Line::from(vec![
-        key("−/+"),
-        dim(" adj  "),
-        key("t"),
-        dim(" speed test  "),
-        key("1-9"),
-        dim(" preset  "),
-        key("[/]"),
-        dim(" iface  "),
         key("a"),
         dim(" apply  "),
+        key("v"),
+        dim(" valid  "),
+        key("t"),
+        dim(" speed  "),
+        key("h"),
+        dim(" history  "),
+        key("y/j"),
+        dim(" dly/jit  "),
         key("r"),
         dim(" reset  "),
         key("q"),
@@ -1415,6 +1647,45 @@ fn draw_keys_main(frame: &mut Frame, area: Rect) {
         .style(Style::default().bg(theme::BG));
     frame.render_widget(Clear, area);
     frame.render_widget(p, area);
+}
+
+fn draw_history_screen(frame: &mut Frame, area: Rect, app: &App) {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(theme::ACCENT))
+        .title(" Speed test history  ·  Esc back ")
+        .style(Style::default().bg(theme::SURFACE));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    if app.speed_history.is_empty() {
+        frame.render_widget(
+            Paragraph::new("\n  No history yet. Run a speed test or Validate.")
+                .style(Style::default().fg(theme::TEXT_MUTED).bg(theme::SURFACE)),
+            inner,
+        );
+        return;
+    }
+
+    let mut lines = vec![Line::from(Span::styled(
+        "  When                 ↓ Mbps   ↑ Mbps   Lat    Iface / limits",
+        Style::default().fg(theme::TEXT_DIM),
+    ))];
+    for e in app.speed_history.iter().take(inner.height.saturating_sub(2) as usize) {
+        let lim = if e.limits.is_active() {
+            format!("  [{}]", e.limits.summary())
+        } else {
+            String::new()
+        };
+        lines.push(Line::from(format!(
+            "  {:19}  {:>6.1}  {:>6.1}  {:>4.0}   {}{}",
+            e.at, e.download_mbps, e.upload_mbps, e.latency_ms, e.interface, lim
+        )));
+    }
+    frame.render_widget(
+        Paragraph::new(lines).style(Style::default().fg(theme::TEXT).bg(theme::SURFACE)),
+        inner,
+    );
 }
 
 fn key(s: &str) -> Span<'_> {

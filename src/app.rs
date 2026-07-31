@@ -16,7 +16,7 @@ use crate::netinfo::list_interfaces;
 use crate::presets::{
     self, all_presets, save_user_presets, slider_max, slider_ratio_to_value, Preset,
 };
-use crate::speedtest::{self, SampleKind, SpeedTestEvent, SpeedTestResult};
+use crate::speedtest::{self, SampleKind, SpeedTestEvent, SpeedTestResult, TestScope};
 use crate::tc::{is_root, Limits, Metric, TcError, TrafficController};
 use crate::ui;
 
@@ -55,6 +55,7 @@ pub enum Screen {
     #[default]
     Main,
     SpeedTest,
+    History,
 }
 
 pub struct App {
@@ -64,6 +65,8 @@ pub struct App {
     pub download: f64,
     pub upload: f64,
     pub loss: f64,
+    pub delay: f64,
+    pub jitter: f64,
     pub interfaces: Vec<String>,
     pub iface_idx: usize,
     pub applied: Limits,
@@ -76,10 +79,12 @@ pub struct App {
     controller: Option<TrafficController>,
     controller_error: Option<String>,
     /// Hit boxes updated each frame for mouse support.
-    pub hit_metrics: [MetricHits; 3],
+    pub hit_metrics: [MetricHits; 5],
     pub hit_apply: Rect,
     pub hit_reset: Rect,
     pub hit_quit: Rect,
+    pub hit_validate: Rect,
+    pub hit_history: Rect,
     /// Open full-screen speed test (on main ping panel).
     pub hit_open_speedtest: Rect,
     /// Speed-test screen controls.
@@ -87,6 +92,10 @@ pub struct App {
     pub hit_st_back: Rect,
     pub hit_st_dur_dec: Rect,
     pub hit_st_dur_inc: Rect,
+    /// Re-run buttons under each graph.
+    pub hit_st_rerun_down: Rect,
+    pub hit_st_rerun_up: Rect,
+    pub hit_st_rerun_lat: Rect,
     /// Clickable rows in the interface list (parallel to `interfaces`).
     pub hit_ifaces: Vec<Rect>,
     pub hit_presets: Vec<PresetHits>,
@@ -104,13 +113,19 @@ pub struct App {
     pub speedtest_running: bool,
     pub speedtest_phase: String,
     pub speedtest_detail: String,
-    pub speedtest_progress: f64,
+    /// Per-phase progress 0.0 ..= 1.0 (latency / download / upload).
+    pub st_prog_lat: f64,
+    pub st_prog_down: f64,
+    pub st_prog_up: f64,
     pub last_speedtest: Option<SpeedTestResult>,
     pub speedtest_error: Option<String>,
     /// Live probe samples for speed-test graphs (Mbps / ms).
     pub st_down_samples: Vec<f64>,
     pub st_up_samples: Vec<f64>,
     pub st_lat_samples: Vec<f64>,
+    /// After apply, auto-run speed test and label result as validation.
+    pub validate_mode: bool,
+    pub speed_history: Vec<crate::history::HistoryEntry>,
     speedtest_rx: Option<Receiver<SpeedTestEvent>>,
     last_sample_at: Instant,
     tick: u64,
@@ -148,6 +163,8 @@ impl App {
             download: 0.0,
             upload: 0.0,
             loss: 0.0,
+            delay: 0.0,
+            jitter: 0.0,
             interfaces,
             iface_idx,
             applied: Limits {
@@ -164,15 +181,20 @@ impl App {
             selected_preset: None,
             controller,
             controller_error,
-            hit_metrics: [MetricHits::default(); 3],
+            hit_metrics: [MetricHits::default(); 5],
             hit_apply: Rect::default(),
             hit_reset: Rect::default(),
             hit_quit: Rect::default(),
+            hit_validate: Rect::default(),
+            hit_history: Rect::default(),
             hit_open_speedtest: Rect::default(),
             hit_st_run: Rect::default(),
             hit_st_back: Rect::default(),
             hit_st_dur_dec: Rect::default(),
             hit_st_dur_inc: Rect::default(),
+            hit_st_rerun_down: Rect::default(),
+            hit_st_rerun_up: Rect::default(),
+            hit_st_rerun_lat: Rect::default(),
             hit_ifaces: Vec::new(),
             hit_presets: Vec::new(),
             hit_save_preset: Rect::default(),
@@ -181,16 +203,20 @@ impl App {
             throughput: ThroughputMonitor::default(),
             ping: PingMonitor::default(),
             history: SampleHistory::default(),
-            speedtest_duration_secs: 15,
+            speedtest_duration_secs: 5,
             speedtest_running: false,
             speedtest_phase: String::new(),
             speedtest_detail: String::new(),
-            speedtest_progress: 0.0,
+            st_prog_lat: 0.0,
+            st_prog_down: 0.0,
+            st_prog_up: 0.0,
             last_speedtest: None,
             speedtest_error: None,
             st_down_samples: Vec::new(),
             st_up_samples: Vec::new(),
             st_lat_samples: Vec::new(),
+            validate_mode: false,
+            speed_history: crate::history::load_history(),
             speedtest_rx: None,
             last_sample_at: Instant::now(),
             tick: 0,
@@ -249,6 +275,7 @@ impl App {
                 self.throughput.down_mbps,
                 self.throughput.up_mbps,
                 self.ping.loss_percent,
+                self.ping.last_rtt_ms,
             );
             self.last_sample_at = now;
         }
@@ -281,11 +308,17 @@ impl App {
                 SpeedTestEvent::Progress {
                     phase,
                     detail,
-                    progress,
+                    phase_progress,
                 } => {
-                    self.speedtest_phase = phase;
+                    self.speedtest_phase = phase.clone();
                     self.speedtest_detail = detail;
-                    self.speedtest_progress = progress.clamp(0.0, 1.0);
+                    let p = phase_progress.clamp(0.0, 1.0);
+                    match phase.as_str() {
+                        "latency" => self.st_prog_lat = p,
+                        "download" => self.st_prog_down = p,
+                        "upload" => self.st_prog_up = p,
+                        _ => {}
+                    }
                 }
                 SpeedTestEvent::Sample { kind, value } => match kind {
                     SampleKind::Download => self.st_down_samples.push(value),
@@ -293,6 +326,7 @@ impl App {
                     SampleKind::Latency => self.st_lat_samples.push(value),
                 },
                 SpeedTestEvent::Finished {
+                    scope,
                     download_mbps,
                     upload_mbps,
                     latency_ms,
@@ -301,21 +335,82 @@ impl App {
                 } => {
                     self.speedtest_running = false;
                     self.speedtest_rx = None;
-                    self.speedtest_progress = 1.0;
                     self.speedtest_phase = "done".into();
-                    self.speedtest_detail = "complete".into();
+                    self.speedtest_detail = format!("{} complete", scope.label());
                     self.speedtest_error = None;
-                    self.last_speedtest = Some(SpeedTestResult {
-                        download_mbps,
-                        upload_mbps,
-                        latency_ms,
-                        jitter_ms,
-                        duration_secs,
-                        down_samples: self.st_down_samples.clone(),
-                        up_samples: self.st_up_samples.clone(),
-                        lat_samples: self.st_lat_samples.clone(),
-                        at: Some(Instant::now()),
-                    });
+
+                    match scope {
+                        TestScope::Full => {
+                            self.st_prog_lat = 1.0;
+                            self.st_prog_down = 1.0;
+                            self.st_prog_up = 1.0;
+                        }
+                        TestScope::Latency => self.st_prog_lat = 1.0,
+                        TestScope::Download => self.st_prog_down = 1.0,
+                        TestScope::Upload => self.st_prog_up = 1.0,
+                    }
+
+                    let mut result = self.last_speedtest.take().unwrap_or_default();
+                    result.duration_secs = duration_secs;
+                    result.at = Some(Instant::now());
+
+                    if let Some(v) = download_mbps {
+                        result.download_mbps = v;
+                        result.down_samples = self.st_down_samples.clone();
+                    }
+                    if let Some(v) = upload_mbps {
+                        result.upload_mbps = v;
+                        result.up_samples = self.st_up_samples.clone();
+                    }
+                    if let Some(v) = latency_ms {
+                        result.latency_ms = v;
+                        result.lat_samples = self.st_lat_samples.clone();
+                    }
+                    if let Some(v) = jitter_ms {
+                        result.jitter_ms = v;
+                    }
+                    if scope == TestScope::Full {
+                        result.down_samples = self.st_down_samples.clone();
+                        result.up_samples = self.st_up_samples.clone();
+                        result.lat_samples = self.st_lat_samples.clone();
+                    }
+                    self.last_speedtest = Some(result.clone());
+
+                    // Persist history (full or partial)
+                    let entry = crate::history::HistoryEntry {
+                        at: crate::history::now_human(),
+                        interface: self.current_iface().to_string(),
+                        download_mbps: result.download_mbps,
+                        upload_mbps: result.upload_mbps,
+                        latency_ms: result.latency_ms,
+                        jitter_ms: result.jitter_ms,
+                        duration_secs: result.duration_secs,
+                        limits: self.applied.clone(),
+                    };
+                    if let Err(e) = crate::history::push_history(entry.clone()) {
+                        self.set_banner(format!("history save failed: {e}"), BannerLevel::Warn);
+                    } else {
+                        self.speed_history = crate::history::load_history();
+                    }
+
+                    if self.validate_mode {
+                        self.validate_mode = false;
+                        let lim = &self.applied;
+                        self.set_banner(
+                            format!(
+                                "✓ Validated under limits: CF ↓ {:.1} / ↑ {:.1} Mbps  lat {:.0}ms  ·  limits ↓ {} ↑ {} loss {} delay {}±{}ms",
+                                result.download_mbps,
+                                result.upload_mbps,
+                                result.latency_ms,
+                                crate::tc::format_rate(lim.download_mbps),
+                                crate::tc::format_rate(lim.upload_mbps),
+                                crate::tc::format_loss(lim.loss_percent),
+                                crate::tc::format_ms(lim.delay_ms),
+                                crate::tc::format_ms(lim.jitter_ms),
+                            ),
+                            BannerLevel::Success,
+                        );
+                    }
                     return;
                 }
                 SpeedTestEvent::Failed(err) => {
@@ -341,21 +436,53 @@ impl App {
     }
 
     fn start_speedtest(&mut self) {
+        self.start_speedtest_scope(TestScope::Full);
+    }
+
+    fn start_speedtest_scope(&mut self, scope: TestScope) {
         if self.speedtest_running {
             return;
         }
         self.screen = Screen::SpeedTest;
         self.speedtest_running = true;
         self.speedtest_phase = "starting".into();
-        self.speedtest_detail = "connecting to Cloudflare…".into();
-        self.speedtest_progress = 0.0;
+        self.speedtest_detail = match scope {
+            TestScope::Full => format!(
+                "full test · {}s per phase · ~{}s total",
+                self.speedtest_duration_secs,
+                self.speedtest_duration_secs * 3
+            ),
+            TestScope::Latency => format!("latency only · {}s", self.speedtest_duration_secs),
+            TestScope::Download => format!("download only · {}s", self.speedtest_duration_secs),
+            TestScope::Upload => format!("upload only · {}s", self.speedtest_duration_secs),
+        };
         self.speedtest_error = None;
-        // Fresh run: wipe previous graphs + report so UI does not fall back to old samples.
-        self.last_speedtest = None;
-        self.st_down_samples.clear();
-        self.st_up_samples.clear();
-        self.st_lat_samples.clear();
-        self.speedtest_rx = Some(speedtest::start(self.speedtest_duration_secs));
+
+        match scope {
+            TestScope::Full => {
+                self.last_speedtest = None;
+                self.st_down_samples.clear();
+                self.st_up_samples.clear();
+                self.st_lat_samples.clear();
+                self.st_prog_lat = 0.0;
+                self.st_prog_down = 0.0;
+                self.st_prog_up = 0.0;
+            }
+            TestScope::Download => {
+                self.st_down_samples.clear();
+                self.st_prog_down = 0.0;
+            }
+            TestScope::Upload => {
+                self.st_up_samples.clear();
+                self.st_prog_up = 0.0;
+            }
+            TestScope::Latency => {
+                self.st_lat_samples.clear();
+                self.st_prog_lat = 0.0;
+            }
+        }
+
+        self.speedtest_rx = Some(speedtest::start(self.speedtest_duration_secs, scope));
     }
 
     fn adjust_speedtest_duration(&mut self, delta: i32) {
@@ -363,7 +490,7 @@ impl App {
             return;
         }
         let v = self.speedtest_duration_secs as i32 + delta;
-        self.speedtest_duration_secs = v.clamp(5, 120) as u32;
+        self.speedtest_duration_secs = v.clamp(1, 120) as u32;
     }
 
     pub fn current_iface(&self) -> &str {
@@ -378,6 +505,8 @@ impl App {
             Metric::Download => self.download,
             Metric::Upload => self.upload,
             Metric::Loss => self.loss,
+            Metric::Delay => self.delay,
+            Metric::Jitter => self.jitter,
         }
     }
 
@@ -386,7 +515,7 @@ impl App {
         let v = v.clamp(0.0, m.max());
         let v = match m {
             Metric::Loss => (v * 10.0).round() / 10.0,
-            Metric::Download | Metric::Upload => {
+            Metric::Download | Metric::Upload | Metric::Delay | Metric::Jitter => {
                 if (v - v.round()).abs() < 1e-9 {
                     v.round()
                 } else {
@@ -398,6 +527,8 @@ impl App {
             Metric::Download => self.download = v,
             Metric::Upload => self.upload = v,
             Metric::Loss => self.loss = v,
+            Metric::Delay => self.delay = v,
+            Metric::Jitter => self.jitter = v,
         }
         self.selected_preset = None;
     }
@@ -414,6 +545,8 @@ impl App {
             download_mbps: self.download,
             upload_mbps: self.upload,
             loss_percent: self.loss,
+            delay_ms: self.delay,
+            jitter_ms: self.jitter,
             interface: self.current_iface().to_string(),
         }
         .normalized()
@@ -425,10 +558,17 @@ impl App {
         };
         let limits = ctrl.status();
         self.applied = limits.clone();
-        if self.download == 0.0 && self.upload == 0.0 && self.loss == 0.0 {
+        if self.download == 0.0
+            && self.upload == 0.0
+            && self.loss == 0.0
+            && self.delay == 0.0
+            && self.jitter == 0.0
+        {
             self.download = limits.download_mbps;
             self.upload = limits.upload_mbps;
             self.loss = limits.loss_percent;
+            self.delay = limits.delay_ms;
+            self.jitter = limits.jitter_ms;
         }
         if limits.is_active() {
             self.set_banner(
@@ -446,13 +586,21 @@ impl App {
     fn on_key(&mut self, key: KeyEvent) {
         match self.screen {
             Screen::SpeedTest => self.on_key_speedtest(key),
+            Screen::History => {
+                if matches!(
+                    key.code,
+                    KeyCode::Esc | KeyCode::Char('b') | KeyCode::Char('q')
+                ) {
+                    self.screen = Screen::Main;
+                }
+            }
             Screen::Main => self.on_key_main(key),
         }
     }
 
     fn on_key_speedtest(&mut self, key: KeyEvent) {
         let coarse = key.modifiers.contains(KeyModifiers::SHIFT);
-        let step = if coarse { 10 } else { 5 };
+        let step = if coarse { 5 } else { 1 };
         match key.code {
             KeyCode::Esc | KeyCode::Char('b') => self.close_speedtest_screen(),
             KeyCode::Char('q') => {
@@ -479,19 +627,26 @@ impl App {
         match key.code {
             KeyCode::Char('q') => self.should_quit = true,
             KeyCode::Esc => self.should_quit = true,
-            KeyCode::Char('a') => self.do_apply(),
+            KeyCode::Char('a') => {
+                let _ = self.do_apply();
+            }
             KeyCode::Char('r') => self.do_reset(),
             KeyCode::Char('t') => self.open_speedtest_screen(),
             KeyCode::Char('i') => self.cycle_iface(1),
             KeyCode::Char('d') => self.selected = Metric::Download,
             KeyCode::Char('u') => self.selected = Metric::Upload,
             KeyCode::Char('l') => self.selected = Metric::Loss,
+            KeyCode::Char('y') => self.selected = Metric::Delay,
+            KeyCode::Char('j') => self.selected = Metric::Jitter,
             KeyCode::Char('s') => self.save_current_as_preset(),
+            KeyCode::Char('v') => self.do_validate(),
+            KeyCode::Char('h') => self.open_history(),
             KeyCode::Char('x') | KeyCode::Delete | KeyCode::Backspace => {
                 self.delete_selected_preset();
             }
             KeyCode::Up | KeyCode::BackTab => {
-                self.selected = Metric::from_index(self.selected.index() + 2);
+                self.selected =
+                    Metric::from_index(self.selected.index() + Metric::ALL.len() - 1);
             }
             KeyCode::Down | KeyCode::Tab => {
                 self.selected = Metric::from_index(self.selected.index() + 1);
@@ -519,6 +674,13 @@ impl App {
         let col = mouse.column;
         let row = mouse.row;
 
+        if self.screen == Screen::History {
+            if mouse.kind == MouseEventKind::Down(MouseButton::Left) {
+                self.screen = Screen::Main;
+            }
+            return;
+        }
+
         if self.screen == Screen::SpeedTest {
             if mouse.kind == MouseEventKind::Down(MouseButton::Left) {
                 if contains(self.hit_st_run, col, row) {
@@ -526,9 +688,15 @@ impl App {
                 } else if contains(self.hit_st_back, col, row) {
                     self.close_speedtest_screen();
                 } else if contains(self.hit_st_dur_dec, col, row) {
-                    self.adjust_speedtest_duration(-5);
+                    self.adjust_speedtest_duration(-1);
                 } else if contains(self.hit_st_dur_inc, col, row) {
-                    self.adjust_speedtest_duration(5);
+                    self.adjust_speedtest_duration(1);
+                } else if contains(self.hit_st_rerun_down, col, row) {
+                    self.start_speedtest_scope(TestScope::Download);
+                } else if contains(self.hit_st_rerun_up, col, row) {
+                    self.start_speedtest_scope(TestScope::Upload);
+                } else if contains(self.hit_st_rerun_lat, col, row) {
+                    self.start_speedtest_scope(TestScope::Latency);
                 }
             }
             return;
@@ -587,6 +755,10 @@ impl App {
                     self.open_speedtest_screen();
                 } else if contains(self.hit_apply, col, row) {
                     self.do_apply();
+                } else if contains(self.hit_validate, col, row) {
+                    self.do_validate();
+                } else if contains(self.hit_history, col, row) {
+                    self.open_history();
                 } else if contains(self.hit_reset, col, row) {
                     self.do_reset();
                 } else if contains(self.hit_quit, col, row) {
@@ -666,6 +838,8 @@ impl App {
         self.download = preset.download_mbps;
         self.upload = preset.upload_mbps;
         self.loss = preset.loss_percent;
+        self.delay = preset.delay_ms;
+        self.jitter = preset.jitter_ms;
         self.selected_preset = Some(idx);
         self.set_banner(
             format!(
@@ -680,7 +854,14 @@ impl App {
     fn save_current_as_preset(&mut self) {
         let n = self.presets.iter().filter(|p| !p.builtin).count() + 1;
         let name = format!("Custom {n}");
-        let preset = Preset::new(name.clone(), self.download, self.upload, self.loss);
+        let preset = Preset::new(
+            name.clone(),
+            self.download,
+            self.upload,
+            self.loss,
+            self.delay,
+            self.jitter,
+        );
         self.presets.push(preset);
         match save_user_presets(&self.presets) {
             Ok(()) => {
@@ -790,13 +971,13 @@ impl App {
         }
     }
 
-    fn do_apply(&mut self) {
+    fn do_apply(&mut self) -> bool {
         if !self.is_root {
             self.set_banner(
                 "Root required. Re-run with: sudo netlimit",
                 BannerLevel::Error,
             );
-            return;
+            return false;
         }
         if self.controller.is_none() {
             self.set_banner(
@@ -805,29 +986,33 @@ impl App {
                     .unwrap_or_else(|| "controller unavailable".into()),
                 BannerLevel::Error,
             );
-            return;
+            return false;
         }
 
         self.busy = true;
         self.set_banner("Applying limits…", BannerLevel::Info);
         let limits = self.draft_limits();
         let result = self.controller.as_ref().unwrap().apply(limits);
-        match result {
+        let ok = match result {
             Ok(applied) => {
                 self.applied = applied.clone();
                 self.set_banner(
                     format!("✓ Applied: {}", applied.summary()),
                     BannerLevel::Success,
                 );
+                true
             }
             Err(TcError::NotRoot) => {
                 self.set_banner("Root required", BannerLevel::Error);
+                false
             }
             Err(e) => {
                 self.set_banner(format!("✗ {e}"), BannerLevel::Error);
+                false
             }
-        }
+        };
         self.busy = false;
+        ok
     }
 
     fn do_reset(&mut self) {
@@ -856,10 +1041,12 @@ impl App {
                 self.download = 0.0;
                 self.upload = 0.0;
                 self.loss = 0.0;
+                self.delay = 0.0;
+                self.jitter = 0.0;
                 self.selected_preset = self
                     .presets
                     .iter()
-                    .position(|p| p.download_mbps == 0.0 && p.upload_mbps == 0.0 && p.loss_percent == 0.0);
+                    .position(|p| p.name == "No limits" || p.name == "Unlimited");
                 self.applied = Limits {
                     interface: self.current_iface().to_string(),
                     ..Default::default()
@@ -881,13 +1068,41 @@ impl App {
     pub fn draft_differs_from_applied(&self) -> bool {
         let draft = self.draft_limits();
         let a = &self.applied;
-        // Compare rates with small epsilon; treat 0 as unlimited both sides.
         let same_dl = (draft.download_mbps - a.download_mbps).abs() < 0.05;
         let same_ul = (draft.upload_mbps - a.upload_mbps).abs() < 0.05;
         let same_loss = (draft.loss_percent - a.loss_percent).abs() < 0.05;
+        let same_delay = (draft.delay_ms - a.delay_ms).abs() < 0.05;
+        let same_jitter = (draft.jitter_ms - a.jitter_ms).abs() < 0.05;
         let same_iface = draft.interface == a.interface
             || (a.interface.is_empty() && draft.interface == self.current_iface());
-        !(same_dl && same_ul && same_loss && same_iface)
+        !(same_dl && same_ul && same_loss && same_delay && same_jitter && same_iface)
+    }
+
+    fn do_validate(&mut self) {
+        if !self.is_root {
+            self.set_banner(
+                "Validate needs root to apply limits first",
+                BannerLevel::Error,
+            );
+            return;
+        }
+        if !self.do_apply() {
+            return;
+        }
+        self.validate_mode = true;
+        let saved = self.speedtest_duration_secs;
+        self.speedtest_duration_secs = 5;
+        self.set_banner(
+            "Validating… Cloudflare test under applied limits (5s/phase)",
+            BannerLevel::Info,
+        );
+        self.start_speedtest_scope(TestScope::Full);
+        self.speedtest_duration_secs = saved;
+    }
+
+    fn open_history(&mut self) {
+        self.speed_history = crate::history::load_history();
+        self.screen = Screen::History;
     }
 }
 

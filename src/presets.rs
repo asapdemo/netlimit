@@ -11,28 +11,50 @@ pub struct Preset {
     pub download_mbps: f64,
     pub upload_mbps: f64,
     pub loss_percent: f64,
+    #[serde(default)]
+    pub delay_ms: f64,
+    #[serde(default)]
+    pub jitter_ms: f64,
     /// Built-in presets cannot be deleted from the UI.
     #[serde(default)]
     pub builtin: bool,
 }
 
 impl Preset {
-    pub fn new(name: impl Into<String>, download: f64, upload: f64, loss: f64) -> Self {
+    pub fn new(
+        name: impl Into<String>,
+        download: f64,
+        upload: f64,
+        loss: f64,
+        delay_ms: f64,
+        jitter_ms: f64,
+    ) -> Self {
         Self {
             name: name.into(),
             download_mbps: download,
             upload_mbps: upload,
             loss_percent: loss,
+            delay_ms,
+            jitter_ms,
             builtin: false,
         }
     }
 
-    pub fn builtin(name: impl Into<String>, download: f64, upload: f64, loss: f64) -> Self {
+    pub fn builtin(
+        name: impl Into<String>,
+        download: f64,
+        upload: f64,
+        loss: f64,
+        delay_ms: f64,
+        jitter_ms: f64,
+    ) -> Self {
         Self {
             name: name.into(),
             download_mbps: download,
             upload_mbps: upload,
             loss_percent: loss,
+            delay_ms,
+            jitter_ms,
             builtin: true,
         }
     }
@@ -48,12 +70,18 @@ impl Preset {
         } else {
             format!("{}↑", trim_num(self.upload_mbps))
         };
-        let loss = if self.loss_percent <= 0.0 {
-            String::new()
-        } else {
-            format!(" {}%", trim_num(self.loss_percent))
-        };
-        format!("{dl}/{ul}{loss}")
+        let mut s = format!("{dl}/{ul}");
+        if self.loss_percent > 0.0 {
+            s.push_str(&format!(" {}%", trim_num(self.loss_percent)));
+        }
+        if self.delay_ms > 0.0 || self.jitter_ms > 0.0 {
+            s.push_str(&format!(
+                " {}±{}ms",
+                trim_num(self.delay_ms),
+                trim_num(self.jitter_ms)
+            ));
+        }
+        s
     }
 }
 
@@ -68,13 +96,14 @@ fn trim_num(v: f64) -> String {
 /// Default factory presets shown for everyone.
 pub fn builtin_presets() -> Vec<Preset> {
     vec![
-        Preset::builtin("Unlimited", 0.0, 0.0, 0.0),
-        Preset::builtin("4G", 25.0, 10.0, 0.0),
-        Preset::builtin("3G", 5.0, 2.0, 1.0),
-        Preset::builtin("Slow", 2.0, 1.0, 0.0),
-        Preset::builtin("Stream", 15.0, 5.0, 0.0),
-        Preset::builtin("Flaky", 40.0, 10.0, 5.0),
-        Preset::builtin("Harsh", 10.0, 2.0, 15.0),
+        // No shaping
+        Preset::builtin("No limits", 0.0, 0.0, 0.0, 0.0, 0.0),
+        // Typical LTE-class mobile
+        Preset::builtin("4G", 25.0, 10.0, 0.0, 40.0, 10.0),
+        // Older mobile / congested cell
+        Preset::builtin("3G", 5.0, 2.0, 1.0, 100.0, 30.0),
+        // Starlink: solid throughput, high RTT + jitter
+        Preset::builtin("Starlink", 100.0, 20.0, 0.5, 40.0, 15.0),
     ]
 }
 
@@ -146,6 +175,8 @@ pub fn slider_max(metric: crate::tc::Metric) -> f64 {
     match metric {
         crate::tc::Metric::Download | crate::tc::Metric::Upload => 200.0,
         crate::tc::Metric::Loss => 100.0,
+        crate::tc::Metric::Delay => 500.0,
+        crate::tc::Metric::Jitter => 100.0,
     }
 }
 
@@ -159,7 +190,8 @@ pub fn slider_ratio_to_value(metric: crate::tc::Metric, ratio: f64) -> f64 {
     let max = slider_max(metric);
     let raw = ratio * max;
     match metric {
-        crate::tc::Metric::Loss => (raw * 2.0).round() / 2.0, // 0.5 steps
-        crate::tc::Metric::Download | crate::tc::Metric::Upload => raw.round(), // 1 Mbps
+        crate::tc::Metric::Loss => (raw * 2.0).round() / 2.0,
+        crate::tc::Metric::Delay | crate::tc::Metric::Jitter => raw.round(),
+        crate::tc::Metric::Download | crate::tc::Metric::Upload => raw.round(),
     }
 }

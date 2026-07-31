@@ -2,6 +2,7 @@
 
 mod app;
 mod elevate;
+mod history;
 mod monitor;
 mod netinfo;
 mod presets;
