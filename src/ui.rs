@@ -6,29 +6,33 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Gauge, Paragraph, Sparkline, Wrap};
 use ratatui::Frame;
 
-use crate::app::{App, BannerLevel, MetricHits, PresetHits};
-use crate::monitor::spark_to_mbps;
+use crate::app::{App, BannerLevel, MetricHits, PresetHits, Screen};
 use crate::presets::{slider_max, value_to_slider_ratio};
 use crate::tc::{format_value, Metric};
 use crate::theme;
 
 pub fn draw(frame: &mut Frame, app: &mut App) {
     let area = frame.area();
-
     frame.render_widget(Block::default().style(Style::default().bg(theme::BG)), area);
 
+    match app.screen {
+        Screen::Main => draw_main(frame, area, app),
+        Screen::SpeedTest => draw_speedtest_screen(frame, area, app),
+    }
+}
+
+fn draw_main(frame: &mut Frame, area: Rect, app: &mut App) {
     let root = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(5),  // interface list
-            Constraint::Length(5),  // presets
-            Constraint::Length(7),  // metrics
-            Constraint::Length(4),  // APPLIED limits (always visible)
-            Constraint::Length(11), // live graphs
-            Constraint::Length(3),  // actions
-            Constraint::Length(2),  // banner
-            Constraint::Length(1),  // keys
-            Constraint::Min(0),
+            Constraint::Length(5), // interface
+            Constraint::Length(5), // presets
+            Constraint::Length(7), // metrics
+            Constraint::Length(4), // applied
+            Constraint::Min(7),    // ping quality (fills rest)
+            Constraint::Length(3), // apply / reset / quit only
+            Constraint::Length(2), // banner
+            Constraint::Length(1), // keys
         ])
         .split(area);
 
@@ -36,10 +40,10 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     draw_presets(frame, root[1], app);
     draw_metrics(frame, root[2], app);
     draw_applied(frame, root[3], app);
-    draw_live(frame, root[4], app);
+    draw_ping_panel(frame, root[4], app);
     draw_actions(frame, root[5], app);
     draw_banner(frame, root[6], app);
-    draw_keys(frame, root[7]);
+    draw_keys_main(frame, root[7]);
 }
 
 fn draw_interface(frame: &mut Frame, area: Rect, app: &mut App) {
@@ -766,152 +770,543 @@ fn draw_applied(frame: &mut Frame, area: Rect, app: &App) {
     }
 }
 
-fn draw_live(frame: &mut Frame, area: Rect, app: &App) {
+/// Path quality only (ICMP). Speed test lives on its own full screen.
+fn draw_ping_panel(frame: &mut Frame, area: Rect, app: &mut App) {
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(theme::BORDER))
         .style(Style::default().bg(theme::SURFACE))
         .title(Span::styled(
-            " LIVE  ·  graphs + Cloudflare ",
+            " PATH QUALITY  ·  ping ",
             Style::default()
                 .fg(theme::TEXT_DIM)
                 .add_modifier(Modifier::BOLD),
         ));
     let inner = block.inner(area);
     frame.render_widget(block, area);
-    if inner.height < 3 || inner.width < 10 {
+    if inner.height < 2 || inner.width < 12 {
+        app.hit_open_speedtest = Rect::default();
         return;
     }
 
-    // Prefer taller sparklines when we have vertical room.
-    let spark_h = if inner.height >= 11 {
-        3
-    } else if inner.height >= 8 {
-        2
+    let body = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Min(2),    // loss spark + stats
+            Constraint::Length(3), // open speed test button
+        ])
+        .split(inner);
+
+    let spark_area = body[0];
+    let spark_h = spark_area.height.saturating_sub(2).max(1);
+    let spark_rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(spark_h),
+            Constraint::Length(1),
+            Constraint::Min(0),
+        ])
+        .split(spark_area);
+
+    let loss_data = app.history.loss_slice();
+    let spark_data: Vec<u64> = if loss_data.is_empty() {
+        vec![0]
     } else {
-        1
+        loss_data
     };
+    let max = spark_data.iter().copied().max().unwrap_or(1).max(1);
+
+    let spark_row = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Length(8),
+            Constraint::Min(10),
+            Constraint::Length(18),
+        ])
+        .split(spark_rows[0]);
+
+    frame.render_widget(
+        Paragraph::new(" LOSS")
+            .style(
+                Style::default()
+                    .fg(theme::LOSS)
+                    .bg(theme::SURFACE)
+                    .add_modifier(Modifier::BOLD),
+            ),
+        spark_row[0],
+    );
+    frame.render_widget(
+        Sparkline::default()
+            .data(&spark_data)
+            .max(max)
+            .style(Style::default().fg(theme::LOSS).bg(theme::SURFACE)),
+        spark_row[1],
+    );
+    frame.render_widget(
+        Paragraph::new(format!("{:.0}%", app.ping.loss_percent))
+            .alignment(Alignment::Right)
+            .style(
+                Style::default()
+                    .fg(theme::LOSS)
+                    .bg(theme::SURFACE)
+                    .add_modifier(Modifier::BOLD),
+            ),
+        spark_row[2],
+    );
+
+    let rtt = app
+        .ping
+        .last_rtt_ms
+        .map(|m| format!("{m:.0} ms"))
+        .unwrap_or_else(|| "—".into());
+    let stats = format!(
+        " host {}  ·  rtt {}  ·  window {} samples  ·  live ↓ {:.1} / ↑ {:.1} Mbps",
+        app.ping.host,
+        rtt,
+        app.ping.samples,
+        app.throughput.down_mbps,
+        app.throughput.up_mbps,
+    );
+    frame.render_widget(
+        Paragraph::new(stats).style(Style::default().fg(theme::TEXT_MUTED).bg(theme::SURFACE)),
+        spark_rows[1],
+    );
+
+    // Dedicated speed-test entry (not next to Apply/Reset)
+    let btn = pad(body[1], 1, 1, 0, 0);
+    app.hit_open_speedtest = btn;
+    let (label, fg) = if app.speedtest_running {
+        ("⚡  Speed test running…  [t] open", theme::WARN)
+    } else if app.last_speedtest.is_some() {
+        ("⚡  Cloudflare Speed Test  [t]  ·  view report / retest", theme::ACCENT)
+    } else {
+        ("⚡  Cloudflare Speed Test  [t]", theme::ACCENT)
+    };
+    render_button(frame, btn, label, fg, theme::BG);
+}
+
+fn draw_speedtest_screen(frame: &mut Frame, area: Rect, app: &mut App) {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(theme::ACCENT))
+        .style(Style::default().bg(theme::SURFACE))
+        .title(Span::styled(
+            " Cloudflare Speed Test ",
+            Style::default()
+                .fg(theme::ACCENT)
+                .add_modifier(Modifier::BOLD),
+        ))
+        .title_bottom(Span::styled(
+            " Esc/b back  ·  Enter/t run  ·  ←→ duration ",
+            Style::default().fg(theme::TEXT_MUTED),
+        ));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    if inner.height < 6 {
+        return;
+    }
 
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(spark_h), // down
-            Constraint::Length(spark_h), // up
-            Constraint::Length(spark_h), // loss
-            Constraint::Length(1),       // live numbers
-            Constraint::Min(1),          // speedtest status
+            Constraint::Length(3), // controls
+            Constraint::Length(1), // status
+            Constraint::Length(1), // progress bar (compact)
+            Constraint::Min(6),    // graphs (main focus)
+            Constraint::Length(3), // compact results strip
         ])
         .split(inner);
 
-    draw_spark_row(
-        frame,
-        rows[0],
-        "↓",
-        &app.history.down_slice(),
-        theme::DOWNLOAD,
-        format!("{:.1} Mbps", app.throughput.down_mbps),
-    );
-    draw_spark_row(
-        frame,
-        rows[1],
-        "↑",
-        &app.history.up_slice(),
-        theme::UPLOAD,
-        format!("{:.1} Mbps", app.throughput.up_mbps),
-    );
-    draw_spark_row(
-        frame,
-        rows[2],
-        "LOSS",
-        &app.history.loss_slice(),
-        theme::LOSS,
-        format!(
-            "{:.0}%  rtt {}",
-            app.ping.loss_percent,
-            app.ping
-                .last_rtt_ms
-                .map(|m| format!("{m:.0}ms"))
-                .unwrap_or_else(|| "—".into())
-        ),
-    );
-
-    let live_line = format!(
-        " iface {}  ·  ping {}  ·  samples {}",
-        app.current_iface(),
-        app.ping.host,
-        app.history.down_mbps.len()
-    );
-    frame.render_widget(
-        Paragraph::new(live_line).style(Style::default().fg(theme::TEXT_MUTED).bg(theme::SURFACE)),
-        rows[3],
-    );
-
-    let st = if app.speedtest_running {
-        format!(
-            " ⚡ CF test [{}/{}]…",
-            app.speedtest_phase, app.speedtest_detail
-        )
-    } else if let Some(r) = &app.last_speedtest {
-        format!(
-            " ⚡ Last CF: ↓ {:.1} Mbps  ↑ {:.1} Mbps  lat {:.0} ms  jit {:.0} ms   [t] retest",
-            r.download_mbps, r.upload_mbps, r.latency_ms, r.jitter_ms
-        )
-    } else {
-        " ⚡ Cloudflare speed test: press [t] or click Speed Test".into()
-    };
-    let st_style = if app.speedtest_running {
-        Style::default().fg(theme::WARN).bg(theme::SURFACE)
-    } else if app.last_speedtest.is_some() {
-        Style::default().fg(theme::SUCCESS).bg(theme::SURFACE)
-    } else {
-        Style::default().fg(theme::TEXT_DIM).bg(theme::SURFACE)
-    };
-    frame.render_widget(Paragraph::new(st).style(st_style), rows[4]);
-}
-
-fn draw_spark_row(
-    frame: &mut Frame,
-    area: Rect,
-    label: &str,
-    data: &[u64],
-    color: Color,
-    value: String,
-) {
-    let chunks = Layout::default()
+    // ── controls ──────────────────────────────────────────────────
+    let ctrl = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([
+            Constraint::Length(12),
             Constraint::Length(5),
-            Constraint::Min(8),
-            Constraint::Length(16),
+            Constraint::Length(8),
+            Constraint::Length(5),
+            Constraint::Length(2),
+            Constraint::Length(12),
+            Constraint::Length(2),
+            Constraint::Length(10),
+            Constraint::Min(0),
         ])
-        .split(area);
+        .split(rows[0]);
 
     frame.render_widget(
-        Paragraph::new(format!(" {label}"))
-            .style(Style::default().fg(color).bg(theme::SURFACE).add_modifier(Modifier::BOLD)),
-        chunks[0],
+        Paragraph::new(" Duration")
+            .style(Style::default().fg(theme::TEXT_DIM).bg(theme::SURFACE)),
+        ctrl[0],
+    );
+    app.hit_st_dur_dec = ctrl[1];
+    app.hit_st_dur_inc = ctrl[3];
+    render_chip_button(
+        frame,
+        ctrl[1],
+        "−",
+        theme::ACCENT,
+        theme::BG,
+        if app.speedtest_running {
+            theme::BORDER
+        } else {
+            theme::ACCENT
+        },
+    );
+    frame.render_widget(
+        Paragraph::new(format!("{}s", app.speedtest_duration_secs))
+            .alignment(Alignment::Center)
+            .style(
+                Style::default()
+                    .fg(theme::TEXT)
+                    .bg(theme::BG)
+                    .add_modifier(Modifier::BOLD),
+            )
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(theme::BORDER)),
+            ),
+        ctrl[2],
+    );
+    render_chip_button(
+        frame,
+        ctrl[3],
+        "+",
+        theme::ACCENT,
+        theme::BG,
+        if app.speedtest_running {
+            theme::BORDER
+        } else {
+            theme::ACCENT
+        },
     );
 
-    let spark_data: Vec<u64> = if data.is_empty() {
-        vec![0]
-    } else {
-        data.to_vec()
-    };
-    // For loss series values are ×10; still fine for spark shape.
-    let max = spark_data.iter().copied().max().unwrap_or(1).max(1);
-    let spark = Sparkline::default()
-        .data(&spark_data)
-        .max(max)
-        .style(Style::default().fg(color).bg(theme::SURFACE));
-    frame.render_widget(spark, chunks[1]);
+    app.hit_st_run = ctrl[5];
+    app.hit_st_back = ctrl[7];
+    render_button(
+        frame,
+        ctrl[5],
+        if app.speedtest_running {
+            "… Run"
+        } else {
+            "▶ Run"
+        },
+        if app.speedtest_running {
+            theme::WARN
+        } else {
+            theme::SUCCESS
+        },
+        if app.speedtest_running {
+            theme::SURFACE
+        } else {
+            Color::Rgb(35, 134, 54)
+        },
+    );
+    render_button(frame, ctrl[7], "← Back", theme::TEXT_DIM, theme::BG);
 
-    // Optional: show peak of spark in Mbps for rate series (label already has live value)
-    let _peak = spark_to_mbps(max);
+    // ── status + thin progress ────────────────────────────────────
+    let phase = if app.speedtest_running {
+        format!(" {} — {} ", app.speedtest_phase, app.speedtest_detail)
+    } else if let Some(err) = &app.speedtest_error {
+        format!(" ✗ {err} ")
+    } else if app.last_speedtest.is_some() {
+        " complete — Run to retest ".into()
+    } else {
+        " set duration, then Run ".into()
+    };
     frame.render_widget(
-        Paragraph::new(format!(" {value}"))
-            .alignment(Alignment::Right)
-            .style(Style::default().fg(color).bg(theme::SURFACE)),
-        chunks[2],
+        Paragraph::new(phase).style(Style::default().fg(
+            if app.speedtest_error.is_some() {
+                theme::ERROR
+            } else {
+                theme::TEXT_MUTED
+            },
+        ).bg(theme::SURFACE)),
+        rows[1],
+    );
+
+    let ratio = if app.speedtest_running {
+        app.speedtest_progress.clamp(0.0, 1.0)
+    } else if app.last_speedtest.is_some() && app.speedtest_error.is_none() {
+        1.0
+    } else {
+        0.0
+    };
+    frame.render_widget(
+        Gauge::default()
+            .gauge_style(Style::default().fg(theme::ACCENT).bg(Color::Rgb(30, 35, 42)))
+            .ratio(ratio)
+            .label(format!("{:.0}%", ratio * 100.0)),
+        rows[2],
+    );
+
+    // ── graphs (main area) ────────────────────────────────────────
+    let graphs = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Percentage(34),
+            Constraint::Percentage(33),
+            Constraint::Percentage(33),
+        ])
+        .split(rows[3]);
+
+    // While running (or after reset), only live samples — never mix with a previous report.
+    let (down_s, up_s, lat_s, down_v, up_v, lat_v) = if app.speedtest_running
+        || app.last_speedtest.is_none()
+    {
+        (
+            app.st_down_samples.as_slice(),
+            app.st_up_samples.as_slice(),
+            app.st_lat_samples.as_slice(),
+            app.st_down_samples
+                .iter()
+                .cloned()
+                .fold(0.0_f64, f64::max),
+            app.st_up_samples.iter().cloned().fold(0.0_f64, f64::max),
+            app.st_lat_samples.last().copied().unwrap_or(0.0),
+        )
+    } else if let Some(r) = &app.last_speedtest {
+        (
+            if app.st_down_samples.is_empty() {
+                r.down_samples.as_slice()
+            } else {
+                app.st_down_samples.as_slice()
+            },
+            if app.st_up_samples.is_empty() {
+                r.up_samples.as_slice()
+            } else {
+                app.st_up_samples.as_slice()
+            },
+            if app.st_lat_samples.is_empty() {
+                r.lat_samples.as_slice()
+            } else {
+                app.st_lat_samples.as_slice()
+            },
+            r.download_mbps,
+            r.upload_mbps,
+            r.latency_ms,
+        )
+    } else {
+        (
+            app.st_down_samples.as_slice(),
+            app.st_up_samples.as_slice(),
+            app.st_lat_samples.as_slice(),
+            0.0,
+            0.0,
+            0.0,
+        )
+    };
+
+    draw_st_graph(
+        frame,
+        graphs[0],
+        "↓ DOWNLOAD",
+        down_s,
+        down_v,
+        "Mbps",
+        theme::DOWNLOAD,
+        false,
+    );
+    draw_st_graph(
+        frame,
+        graphs[1],
+        "↑ UPLOAD",
+        up_s,
+        up_v,
+        "Mbps",
+        theme::UPLOAD,
+        false,
+    );
+    draw_st_graph(
+        frame,
+        graphs[2],
+        "LATENCY",
+        lat_s,
+        lat_v,
+        "ms",
+        theme::ACCENT,
+        true,
+    );
+
+    // ── compact results strip ─────────────────────────────────────
+    let strip = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(if app.last_speedtest.is_some() {
+            theme::SUCCESS
+        } else {
+            theme::BORDER
+        }))
+        .style(Style::default().bg(theme::BG));
+    let strip_inner = strip.inner(rows[4]);
+    frame.render_widget(strip, rows[4]);
+
+    if let Some(err) = &app.speedtest_error {
+        frame.render_widget(
+            Paragraph::new(format!(" ✗ {err}"))
+                .style(Style::default().fg(theme::ERROR).bg(theme::BG)),
+            strip_inner,
+        );
+    } else if let Some(r) = &app.last_speedtest {
+        let line = Line::from(vec![
+            Span::styled(" ↓ ", Style::default().fg(theme::DOWNLOAD)),
+            Span::styled(
+                format!("{:.1} Mbps  ", r.download_mbps),
+                Style::default()
+                    .fg(theme::DOWNLOAD)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled("↑ ", Style::default().fg(theme::UPLOAD)),
+            Span::styled(
+                format!("{:.1} Mbps  ", r.upload_mbps),
+                Style::default()
+                    .fg(theme::UPLOAD)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled("lat ", Style::default().fg(theme::ACCENT)),
+            Span::styled(
+                format!("{:.0} ms  ", r.latency_ms),
+                Style::default()
+                    .fg(theme::ACCENT)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled("jit ", Style::default().fg(theme::WARN)),
+            Span::styled(
+                format!("{:.0} ms  ", r.jitter_ms),
+                Style::default()
+                    .fg(theme::WARN)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                format!("({}s)", r.duration_secs),
+                Style::default().fg(theme::TEXT_MUTED),
+            ),
+        ]);
+        frame.render_widget(
+            Paragraph::new(line)
+                .alignment(Alignment::Center)
+                .style(Style::default().bg(theme::BG)),
+            strip_inner,
+        );
+    } else if app.speedtest_running {
+        frame.render_widget(
+            Paragraph::new(" measuring… graphs update as probes finish ")
+                .alignment(Alignment::Center)
+                .style(Style::default().fg(theme::TEXT_MUTED).bg(theme::BG)),
+            strip_inner,
+        );
+    } else {
+        frame.render_widget(
+            Paragraph::new(" no results yet — press Run ")
+                .alignment(Alignment::Center)
+                .style(Style::default().fg(theme::TEXT_MUTED).bg(theme::BG)),
+            strip_inner,
+        );
+    }
+}
+
+/// Tall sparkline card for one speed-test series.
+fn draw_st_graph(
+    frame: &mut Frame,
+    area: Rect,
+    title: &str,
+    samples: &[f64],
+    headline: f64,
+    unit: &str,
+    color: Color,
+    is_latency: bool,
+) {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(color))
+        .title(Span::styled(
+            format!(" {title} "),
+            Style::default().fg(color).add_modifier(Modifier::BOLD),
+        ))
+        .style(Style::default().bg(theme::BG));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    if inner.height < 2 {
+        return;
+    }
+
+    let parts = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(2), // big number
+            Constraint::Min(2),    // graph
+            Constraint::Length(1), // scale
+        ])
+        .split(inner);
+
+    let value_txt = if is_latency {
+        if headline <= 0.0 && samples.is_empty() {
+            "—".into()
+        } else {
+            format!("{headline:.0}")
+        }
+    } else if headline <= 0.0 && samples.is_empty() {
+        "—".into()
+    } else {
+        format!("{headline:.1}")
+    };
+
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled(
+                format!(" {value_txt}"),
+                Style::default()
+                    .fg(color)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                format!(" {unit}"),
+                Style::default().fg(theme::TEXT_MUTED),
+            ),
+        ]))
+        .alignment(Alignment::Center)
+        .style(Style::default().bg(theme::BG)),
+        parts[0],
+    );
+
+    // Sparkline data: scale floats → u64
+    let data: Vec<u64> = if samples.is_empty() {
+        vec![0]
+    } else if is_latency {
+        samples
+            .iter()
+            .map(|v| (v.max(0.0) * 10.0).round() as u64) // 0.1 ms
+            .collect()
+    } else {
+        samples
+            .iter()
+            .map(|v| (v.max(0.0) * 10.0).round() as u64) // 0.1 Mbps
+            .collect()
+    };
+    let max = data.iter().copied().max().unwrap_or(1).max(1);
+    frame.render_widget(
+        Sparkline::default()
+            .data(&data)
+            .max(max)
+            .style(Style::default().fg(color).bg(theme::BG)),
+        parts[1],
+    );
+
+    let scale = if samples.is_empty() {
+        " waiting… ".into()
+    } else {
+        let mn = samples.iter().cloned().fold(f64::INFINITY, f64::min);
+        let mx = samples.iter().cloned().fold(0.0_f64, f64::max);
+        if is_latency {
+            format!(" {mn:.0}–{mx:.0} ms · {} probes ", samples.len())
+        } else {
+            format!(" {mn:.1}–{mx:.1} · {} probes ", samples.len())
+        }
+    };
+    frame.render_widget(
+        Paragraph::new(scale)
+            .alignment(Alignment::Center)
+            .style(Style::default().fg(theme::TEXT_MUTED).bg(theme::BG)),
+        parts[2],
     );
 }
 
@@ -919,22 +1314,22 @@ fn draw_actions(frame: &mut Frame, area: Rect, app: &mut App) {
     let chunks = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([
-            Constraint::Percentage(25),
-            Constraint::Percentage(25),
-            Constraint::Percentage(25),
-            Constraint::Percentage(25),
+            Constraint::Percentage(34),
+            Constraint::Percentage(33),
+            Constraint::Percentage(33),
         ])
         .split(area);
 
     let apply_area = pad(chunks[0], 0, 1, 0, 0);
     let reset_area = pad(chunks[1], 0, 1, 0, 0);
-    let speed_area = pad(chunks[2], 0, 1, 0, 0);
-    let quit_area = pad(chunks[3], 0, 0, 0, 0);
+    let quit_area = pad(chunks[2], 0, 0, 0, 0);
 
     app.hit_apply = apply_area;
     app.hit_reset = reset_area;
-    app.hit_speedtest = speed_area;
     app.hit_quit = quit_area;
+    // Clear speed-test hits from main action row
+    app.hit_st_run = Rect::default();
+    app.hit_st_back = Rect::default();
 
     render_button(
         frame,
@@ -949,22 +1344,6 @@ fn draw_actions(frame: &mut Frame, area: Rect, app: &mut App) {
         "↺ Reset [r]",
         theme::ERROR,
         theme::SURFACE,
-    );
-    let (sfg, sbg) = if app.speedtest_running {
-        (theme::WARN, theme::SURFACE)
-    } else {
-        (theme::ACCENT, theme::SURFACE)
-    };
-    render_button(
-        frame,
-        speed_area,
-        if app.speedtest_running {
-            "… Testing"
-        } else {
-            "⚡ Speed [t]"
-        },
-        sfg,
-        sbg,
     );
     render_button(
         frame,
@@ -1014,12 +1393,12 @@ fn draw_banner(frame: &mut Frame, area: Rect, app: &App) {
     );
 }
 
-fn draw_keys(frame: &mut Frame, area: Rect) {
+fn draw_keys_main(frame: &mut Frame, area: Rect) {
     let line = Line::from(vec![
         key("−/+"),
         dim(" adj  "),
         key("t"),
-        dim(" speed  "),
+        dim(" speed test  "),
         key("1-9"),
         dim(" preset  "),
         key("[/]"),

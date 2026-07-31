@@ -26,14 +26,6 @@ impl SampleHistory {
         );
     }
 
-    pub fn down_slice(&self) -> Vec<u64> {
-        self.down_mbps.iter().copied().collect()
-    }
-
-    pub fn up_slice(&self) -> Vec<u64> {
-        self.up_mbps.iter().copied().collect()
-    }
-
     pub fn loss_slice(&self) -> Vec<u64> {
         self.loss_x10.iter().copied().collect()
     }
@@ -53,10 +45,6 @@ fn rate_to_spark(mbps: f64) -> u64 {
     }
     // store as kbps, cap at ~10 Gbit for display scale
     (mbps * 1000.0).clamp(0.0, 10_000_000.0).round() as u64
-}
-
-pub fn spark_to_mbps(v: u64) -> f64 {
-    v as f64 / 1000.0
 }
 
 #[derive(Debug, Clone)]

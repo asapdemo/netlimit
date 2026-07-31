@@ -11,8 +11,8 @@ Built with **Rust** + **ratatui**. Limits download, upload, and packet loss via 
 - Full interface list (click to select)
 - Keyboard + mouse (`−`/`+`, sliders, buttons)
 - Presets (built-in + custom, save/delete)
-- **Live sparklines** — interface ↓/↑ throughput + ICMP path loss
-- **Cloudflare speed test** — download / upload / latency / jitter (`t`)
+- **Path quality** — live ICMP loss sparkline + RTT (main screen)
+- **Cloudflare speed test** — full-screen report, configurable duration (`t`)
 - Apply / Reset with status feedback
 - Single binary: `netlimit`
 
@@ -77,19 +77,20 @@ Loading only fills the draft — press **Apply** to enforce.
 | `x` / `Del` | Delete selected custom preset |
 | `a` | Apply |
 | `r` | Reset |
-| `t` | Cloudflare speed test |
+| `t` | Open Cloudflare speed test screen |
 | `i` / `[` `]` | Cycle interface |
 | `q` / `Esc` | Quit |
 
-### Live graphs & speed test
+### Path quality & speed test
 
-| Graph | Source |
-|-------|--------|
-| ↓ / ↑ sparklines | `/proc/net/dev` counters on the selected interface (~0.5s) |
-| LOSS sparkline | Rolling ICMP loss to `1.1.1.1` (system `ping`) |
-| Speed test | Cloudflare HTTP (`speed.cloudflare.com` `__down` / `__up`) |
+| Feature | Where |
+|---------|--------|
+| LOSS sparkline + RTT | Main screen **PATH QUALITY** panel (ping `1.1.1.1`) |
+| Live ↓/↑ Mbps readout | Same panel (from `/proc/net/dev`) |
+| Cloudflare test | Full-screen (`t` or the speed-test button) |
 
-Speed test runs in a background thread; UI stays interactive. Results appear in the LIVE panel and banner.
+**Speed test screen:** set duration **5–120s** with `←`/`→` or `−`/`+`, **Run** with Enter/`t`, **Back** with Esc/`b`.  
+Longer duration uses larger payloads for more stable Mbps. Active NetLimit rules affect results.
 
 ## How traffic control works
 

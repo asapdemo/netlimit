@@ -16,7 +16,7 @@ use crate::netinfo::list_interfaces;
 use crate::presets::{
     self, all_presets, save_user_presets, slider_max, slider_ratio_to_value, Preset,
 };
-use crate::speedtest::{self, SpeedTestEvent, SpeedTestResult};
+use crate::speedtest::{self, SampleKind, SpeedTestEvent, SpeedTestResult};
 use crate::tc::{is_root, Limits, Metric, TcError, TrafficController};
 use crate::ui;
 
@@ -50,8 +50,16 @@ pub struct PresetHits {
     pub delete: Option<Rect>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Screen {
+    #[default]
+    Main,
+    SpeedTest,
+}
+
 pub struct App {
     pub should_quit: bool,
+    pub screen: Screen,
     pub selected: Metric,
     pub download: f64,
     pub upload: f64,
@@ -71,8 +79,14 @@ pub struct App {
     pub hit_metrics: [MetricHits; 3],
     pub hit_apply: Rect,
     pub hit_reset: Rect,
-    pub hit_speedtest: Rect,
     pub hit_quit: Rect,
+    /// Open full-screen speed test (on main ping panel).
+    pub hit_open_speedtest: Rect,
+    /// Speed-test screen controls.
+    pub hit_st_run: Rect,
+    pub hit_st_back: Rect,
+    pub hit_st_dur_dec: Rect,
+    pub hit_st_dur_inc: Rect,
     /// Clickable rows in the interface list (parallel to `interfaces`).
     pub hit_ifaces: Vec<Rect>,
     pub hit_presets: Vec<PresetHits>,
@@ -85,10 +99,18 @@ pub struct App {
     pub throughput: ThroughputMonitor,
     pub ping: PingMonitor,
     pub history: SampleHistory,
+    /// Target duration for Cloudflare test (seconds).
+    pub speedtest_duration_secs: u32,
     pub speedtest_running: bool,
     pub speedtest_phase: String,
     pub speedtest_detail: String,
+    pub speedtest_progress: f64,
     pub last_speedtest: Option<SpeedTestResult>,
+    pub speedtest_error: Option<String>,
+    /// Live probe samples for speed-test graphs (Mbps / ms).
+    pub st_down_samples: Vec<f64>,
+    pub st_up_samples: Vec<f64>,
+    pub st_lat_samples: Vec<f64>,
     speedtest_rx: Option<Receiver<SpeedTestEvent>>,
     last_sample_at: Instant,
     tick: u64,
@@ -121,6 +143,7 @@ impl App {
 
         let mut app = Self {
             should_quit: false,
+            screen: Screen::Main,
             selected: Metric::Download,
             download: 0.0,
             upload: 0.0,
@@ -144,8 +167,12 @@ impl App {
             hit_metrics: [MetricHits::default(); 3],
             hit_apply: Rect::default(),
             hit_reset: Rect::default(),
-            hit_speedtest: Rect::default(),
             hit_quit: Rect::default(),
+            hit_open_speedtest: Rect::default(),
+            hit_st_run: Rect::default(),
+            hit_st_back: Rect::default(),
+            hit_st_dur_dec: Rect::default(),
+            hit_st_dur_inc: Rect::default(),
             hit_ifaces: Vec::new(),
             hit_presets: Vec::new(),
             hit_save_preset: Rect::default(),
@@ -154,10 +181,16 @@ impl App {
             throughput: ThroughputMonitor::default(),
             ping: PingMonitor::default(),
             history: SampleHistory::default(),
+            speedtest_duration_secs: 15,
             speedtest_running: false,
             speedtest_phase: String::new(),
             speedtest_detail: String::new(),
+            speedtest_progress: 0.0,
             last_speedtest: None,
+            speedtest_error: None,
+            st_down_samples: Vec::new(),
+            st_up_samples: Vec::new(),
+            st_lat_samples: Vec::new(),
             speedtest_rx: None,
             last_sample_at: Instant::now(),
             tick: 0,
@@ -245,39 +278,44 @@ impl App {
             };
 
             match event {
-                SpeedTestEvent::Progress { phase, detail } => {
-                    self.speedtest_phase = phase.clone();
-                    self.speedtest_detail = detail.clone();
-                    self.set_banner(
-                        format!("Speed test [{phase}]: {detail}"),
-                        BannerLevel::Info,
-                    );
+                SpeedTestEvent::Progress {
+                    phase,
+                    detail,
+                    progress,
+                } => {
+                    self.speedtest_phase = phase;
+                    self.speedtest_detail = detail;
+                    self.speedtest_progress = progress.clamp(0.0, 1.0);
                 }
+                SpeedTestEvent::Sample { kind, value } => match kind {
+                    SampleKind::Download => self.st_down_samples.push(value),
+                    SampleKind::Upload => self.st_up_samples.push(value),
+                    SampleKind::Latency => self.st_lat_samples.push(value),
+                },
                 SpeedTestEvent::Finished {
                     download_mbps,
                     upload_mbps,
                     latency_ms,
                     jitter_ms,
+                    duration_secs,
                 } => {
                     self.speedtest_running = false;
                     self.speedtest_rx = None;
+                    self.speedtest_progress = 1.0;
                     self.speedtest_phase = "done".into();
-                    self.speedtest_detail = format!(
-                        "↓ {download_mbps:.1}  ↑ {upload_mbps:.1}  lat {latency_ms:.0}ms  jit {jitter_ms:.0}ms"
-                    );
+                    self.speedtest_detail = "complete".into();
+                    self.speedtest_error = None;
                     self.last_speedtest = Some(SpeedTestResult {
                         download_mbps,
                         upload_mbps,
                         latency_ms,
                         jitter_ms,
+                        duration_secs,
+                        down_samples: self.st_down_samples.clone(),
+                        up_samples: self.st_up_samples.clone(),
+                        lat_samples: self.st_lat_samples.clone(),
                         at: Some(Instant::now()),
                     });
-                    self.set_banner(
-                        format!(
-                            "✓ Cloudflare: ↓ {download_mbps:.1} Mbps  ↑ {upload_mbps:.1} Mbps  ·  {latency_ms:.0} ms ± {jitter_ms:.0}"
-                        ),
-                        BannerLevel::Success,
-                    );
                     return;
                 }
                 SpeedTestEvent::Failed(err) => {
@@ -285,26 +323,47 @@ impl App {
                     self.speedtest_rx = None;
                     self.speedtest_phase = "error".into();
                     self.speedtest_detail = err.clone();
-                    self.set_banner(format!("✗ Speed test failed: {err}"), BannerLevel::Error);
+                    self.speedtest_error = Some(err);
                     return;
                 }
             }
         }
     }
 
+    pub fn open_speedtest_screen(&mut self) {
+        self.screen = Screen::SpeedTest;
+        self.speedtest_error = None;
+    }
+
+    pub fn close_speedtest_screen(&mut self) {
+        // Keep a running test in the background if user backs out.
+        self.screen = Screen::Main;
+    }
+
     fn start_speedtest(&mut self) {
         if self.speedtest_running {
-            self.set_banner("Speed test already running…", BannerLevel::Warn);
             return;
         }
+        self.screen = Screen::SpeedTest;
         self.speedtest_running = true;
         self.speedtest_phase = "starting".into();
         self.speedtest_detail = "connecting to Cloudflare…".into();
-        self.speedtest_rx = Some(speedtest::start());
-        self.set_banner(
-            "Cloudflare speed test started (runs in background)…",
-            BannerLevel::Info,
-        );
+        self.speedtest_progress = 0.0;
+        self.speedtest_error = None;
+        // Fresh run: wipe previous graphs + report so UI does not fall back to old samples.
+        self.last_speedtest = None;
+        self.st_down_samples.clear();
+        self.st_up_samples.clear();
+        self.st_lat_samples.clear();
+        self.speedtest_rx = Some(speedtest::start(self.speedtest_duration_secs));
+    }
+
+    fn adjust_speedtest_duration(&mut self, delta: i32) {
+        if self.speedtest_running {
+            return;
+        }
+        let v = self.speedtest_duration_secs as i32 + delta;
+        self.speedtest_duration_secs = v.clamp(5, 120) as u32;
     }
 
     pub fn current_iface(&self) -> &str {
@@ -385,13 +444,44 @@ impl App {
     }
 
     fn on_key(&mut self, key: KeyEvent) {
+        match self.screen {
+            Screen::SpeedTest => self.on_key_speedtest(key),
+            Screen::Main => self.on_key_main(key),
+        }
+    }
+
+    fn on_key_speedtest(&mut self, key: KeyEvent) {
+        let coarse = key.modifiers.contains(KeyModifiers::SHIFT);
+        let step = if coarse { 10 } else { 5 };
+        match key.code {
+            KeyCode::Esc | KeyCode::Char('b') => self.close_speedtest_screen(),
+            KeyCode::Char('q') => {
+                if self.speedtest_running {
+                    self.close_speedtest_screen();
+                } else {
+                    self.should_quit = true;
+                }
+            }
+            KeyCode::Enter | KeyCode::Char('t') | KeyCode::Char(' ') => self.start_speedtest(),
+            KeyCode::Left | KeyCode::Char('-') | KeyCode::Char('_') => {
+                self.adjust_speedtest_duration(-step);
+            }
+            KeyCode::Right | KeyCode::Char('+') | KeyCode::Char('=') => {
+                self.adjust_speedtest_duration(step);
+            }
+            _ => {}
+        }
+    }
+
+    fn on_key_main(&mut self, key: KeyEvent) {
         let coarse = key.modifiers.contains(KeyModifiers::SHIFT);
 
         match key.code {
-            KeyCode::Char('q') | KeyCode::Esc => self.should_quit = true,
+            KeyCode::Char('q') => self.should_quit = true,
+            KeyCode::Esc => self.should_quit = true,
             KeyCode::Char('a') => self.do_apply(),
             KeyCode::Char('r') => self.do_reset(),
-            KeyCode::Char('t') => self.start_speedtest(),
+            KeyCode::Char('t') => self.open_speedtest_screen(),
             KeyCode::Char('i') => self.cycle_iface(1),
             KeyCode::Char('d') => self.selected = Metric::Download,
             KeyCode::Char('u') => self.selected = Metric::Upload,
@@ -417,7 +507,6 @@ impl App {
             KeyCode::PageDown => self.cycle_iface(1),
             KeyCode::PageUp => self.cycle_iface(-1),
             KeyCode::Char('0') => self.set_metric_value(self.selected, 0.0),
-            // Number keys 1–9 load presets
             KeyCode::Char(c) if c.is_ascii_digit() && c != '0' => {
                 let idx = (c as u8 - b'1') as usize;
                 self.apply_preset(idx);
@@ -430,9 +519,23 @@ impl App {
         let col = mouse.column;
         let row = mouse.row;
 
+        if self.screen == Screen::SpeedTest {
+            if mouse.kind == MouseEventKind::Down(MouseButton::Left) {
+                if contains(self.hit_st_run, col, row) {
+                    self.start_speedtest();
+                } else if contains(self.hit_st_back, col, row) {
+                    self.close_speedtest_screen();
+                } else if contains(self.hit_st_dur_dec, col, row) {
+                    self.adjust_speedtest_duration(-5);
+                } else if contains(self.hit_st_dur_inc, col, row) {
+                    self.adjust_speedtest_duration(5);
+                }
+            }
+            return;
+        }
+
         match mouse.kind {
             MouseEventKind::Down(MouseButton::Left) => {
-                // ± buttons first (more specific hit targets)
                 for (i, hits) in self.hit_metrics.iter().enumerate() {
                     let metric = Metric::from_index(i);
                     if contains(hits.dec, col, row) {
@@ -475,18 +578,17 @@ impl App {
                 }
                 for (i, rect) in self.hit_ifaces.iter().enumerate() {
                     if contains(*rect, col, row) {
-                        // hit_ifaces are only visible rows; map via scroll
                         let idx = self.iface_scroll + i;
                         self.select_iface(idx);
                         return;
                     }
                 }
-                if contains(self.hit_apply, col, row) {
+                if contains(self.hit_open_speedtest, col, row) {
+                    self.open_speedtest_screen();
+                } else if contains(self.hit_apply, col, row) {
                     self.do_apply();
                 } else if contains(self.hit_reset, col, row) {
                     self.do_reset();
-                } else if contains(self.hit_speedtest, col, row) {
-                    self.start_speedtest();
                 } else if contains(self.hit_quit, col, row) {
                     self.should_quit = true;
                 }
@@ -502,7 +604,6 @@ impl App {
             MouseEventKind::Up(MouseButton::Left) => {
                 self.dragging = None;
             }
-            // Scroll wheel over selected metric card
             MouseEventKind::ScrollUp => {
                 if let Some(m) = self.metric_at(col, row) {
                     self.selected = m;

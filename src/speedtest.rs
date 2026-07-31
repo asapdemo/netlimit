@@ -10,6 +10,13 @@ use reqwest::header::{CONTENT_TYPE, USER_AGENT};
 const DOWN_URL: &str = "https://speed.cloudflare.com/__down";
 const UP_URL: &str = "https://speed.cloudflare.com/__up";
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SampleKind {
+    Download,
+    Upload,
+    Latency,
+}
+
 #[derive(Debug, Clone)]
 pub enum SpeedTestEvent {
     Progress {
@@ -17,6 +24,11 @@ pub enum SpeedTestEvent {
         detail: String,
         /// 0.0 ..= 1.0 overall progress estimate
         progress: f64,
+    },
+    /// One probe result for live / report graphs (Mbps or ms).
+    Sample {
+        kind: SampleKind,
+        value: f64,
     },
     Finished {
         download_mbps: f64,
@@ -35,6 +47,10 @@ pub struct SpeedTestResult {
     pub latency_ms: f64,
     pub jitter_ms: f64,
     pub duration_secs: u32,
+    pub down_samples: Vec<f64>,
+    pub up_samples: Vec<f64>,
+    pub lat_samples: Vec<f64>,
+    #[allow(dead_code)]
     pub at: Option<Instant>,
 }
 
@@ -85,7 +101,13 @@ fn run_test(tx: &Sender<SpeedTestEvent>, duration_secs: u32) -> Result<(), Strin
             progress: 0.05 + 0.15 * (i as f64 / 12.0).min(1.0),
         });
         match measure_latency_ms(&client) {
-            Ok(ms) => rtts.push(ms),
+            Ok(ms) => {
+                rtts.push(ms);
+                let _ = tx.send(SpeedTestEvent::Sample {
+                    kind: SampleKind::Latency,
+                    value: ms,
+                });
+            }
             Err(e) if rtts.is_empty() && i >= 3 => {
                 return Err(format!("latency probe failed: {e}"));
             }
@@ -140,6 +162,10 @@ fn run_test(tx: &Sender<SpeedTestEvent>, duration_secs: u32) -> Result<(), Strin
         match measure_download_mbps(&client, bytes) {
             Ok(mbps) => {
                 down_rates.push(mbps);
+                let _ = tx.send(SpeedTestEvent::Sample {
+                    kind: SampleKind::Download,
+                    value: mbps,
+                });
                 let _ = tx.send(SpeedTestEvent::Progress {
                     phase: "download".into(),
                     detail: format!("{label} → {mbps:.1} Mbps"),
@@ -184,6 +210,10 @@ fn run_test(tx: &Sender<SpeedTestEvent>, duration_secs: u32) -> Result<(), Strin
         match measure_upload_mbps(&client, bytes) {
             Ok(mbps) => {
                 up_rates.push(mbps);
+                let _ = tx.send(SpeedTestEvent::Sample {
+                    kind: SampleKind::Upload,
+                    value: mbps,
+                });
                 let _ = tx.send(SpeedTestEvent::Progress {
                     phase: "upload".into(),
                     detail: format!("{label} → {mbps:.1} Mbps"),
