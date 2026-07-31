@@ -1,172 +1,114 @@
 # NetLimit
 
-**Interactive TUI for system-wide network traffic control on Linux** — inspired by [btop](https://github.com/aristocratos/btop).
+Interactive **btop-style** TUI for system-wide Linux network traffic control.
 
-Limit download speed, upload speed, and packet loss in real time using a modern dark terminal interface. Built on Linux `tc` + `netem` + IFB.
-
-![NetLimit TUI](https://img.shields.io/badge/TUI-Textual-blue) ![Linux](https://img.shields.io/badge/OS-Linux-orange) ![Python](https://img.shields.io/badge/Python-3.11%2B-green)
-
----
+Built with **Rust** + **ratatui**. Limits download, upload, and packet loss via `tc` / `netem` / IFB.
 
 ## Features
 
-- Full-screen, btop-style dark UI (Textual)
-- Live display of download / upload / packet loss
-- Keyboard **and** mouse controls
-- Auto-detect default network interface (or pick another)
-- **Apply** / **Reset** with clear status feedback
-- **Upload** shaping via HTB + netem on interface egress
-- **Download** shaping via IFB ingress redirect + HTB + netem
-- Packet loss via netem
-- Clean teardown of qdiscs and IFB on reset
-
----
+- Dense dark dashboard (btop-inspired)
+- Download / upload Mbps + packet loss %
+- Full interface list (click to select)
+- Keyboard + mouse (`−`/`+`, sliders, buttons)
+- Presets (built-in + custom, save/delete)
+- Apply / Reset with status feedback
+- Single binary: `netlimit`
 
 ## Requirements
 
-- Linux (`tc`, `ip`, `modprobe ifb`)
-- Python 3.11+
-- Root privileges for applying/resetting limits
-- `iproute2` (`tc`, `ip`)
+- Linux + `iproute2` (`tc`, `ip`)
+- Root for Apply / Reset
+- Rust 1.74+ (to build)
+
+## Build & run
 
 ```bash
-# Debian / Ubuntu
-sudo apt install iproute2
+cargo build --release
 
-# Fedora
-sudo dnf install iproute-tc
-```
+# absolute path works with sudo (secure_path safe)
+sudo ./target/release/netlimit
 
----
-
-## Install
-
-```bash
-cd netlimit
-uv sync
-```
-
-### Running with sudo
-
-`sudo` uses a restricted `PATH` and **cannot see** project venvs.
-
-**Always works (absolute path):**
-
-```bash
-sudo .venv/bin/netlimit
-# or
-sudo /path/to/netlimit/.venv/bin/netlimit
-```
-
-**Install a system link once** (then plain `sudo netlimit` works):
-
-```bash
-sudo ln -sf "$(pwd)/.venv/bin/netlimit" /usr/local/bin/netlimit
+# optional system link
+sudo ln -sf "$(pwd)/target/release/netlimit" /usr/local/bin/netlimit
 sudo netlimit
 ```
 
-**Auto re-exec** (app escalates with the absolute path):
+Development:
 
 ```bash
-uv run netlimit
-# → sudo /full/path/to/.venv/bin/netlimit
+cargo run -- --no-sudo          # UI without elevation
+cargo run -- -i wlan0
 ```
 
-If sudo prints `Sorry, try again`, that is a **password / sudo auth** problem before NetLimit starts. Check with `sudo whoami`.
+If launched without root, the app re-execs via `sudo` using its absolute path.
 
----
+## Controls
 
-## Usage
+### Metric cards
+- **`[ − ]` / `[ + ]`** — step values
+- **Slider** — click or drag (0–200 Mbps / 0–100% loss)
+- Scroll wheel over a card to nudge
 
-```bash
-sudo .venv/bin/netlimit
-sudo .venv/bin/netlimit -i wlan0
-uv run netlimit --no-sudo          # UI only, no elevation (Apply needs root)
-```
+### Interfaces
+- Full list with state (`up` / `down`) and default marker
+- Click a row to select · `[` / `]` or `i` to cycle
 
-### Keybindings
+### Presets
+| Action | How |
+|--------|-----|
+| Load | `1`–`9` or click chip |
+| Save | `s` or **+ Save** |
+| Delete custom | click **`×`**, or select + `x` / `Del` |
+
+Customs: `~/.config/netlimit/presets.json`.  
+Loading only fills the draft — press **Apply** to enforce.
+
+### Keys
 
 | Key | Action |
 |-----|--------|
-| `↑` / `↓` / `Tab` | Select metric |
-| `←` / `→` or `+` / `−` | Adjust value |
-| `Shift` + `±` / arrows | Coarse step (×10) |
-| `d` / `u` / `l` | Focus download / upload / loss |
-| `a` | Apply settings |
-| `r` | Reset (remove all limits) |
-| `i` | Cycle network interface |
+| `↑` `↓` / `Tab` | Select metric |
+| `←` `→` / `+` `−` | Adjust value |
+| `Shift` + adjust | Coarse step |
+| `1`–`9` | Load preset |
+| `s` | Save custom preset |
+| `x` / `Del` | Delete selected custom preset |
+| `a` | Apply |
+| `r` | Reset |
+| `i` / `[` `]` | Cycle interface |
 | `q` / `Esc` | Quit |
 
-Mouse: click **+** / **−** on cards, interface arrows, and action buttons.
-
-**Values:** `0` Mbps means **unlimited** for download/upload.
-
----
-
-## Project structure
-
-```
-netlimit/
-├── pyproject.toml
-├── README.md
-└── netlimit/
-    ├── __init__.py
-    ├── __main__.py
-    ├── main.py              # Entry point (argparse + launch TUI)
-    ├── elevate.py           # sudo re-exec helpers
-    ├── core/
-    │   ├── __init__.py
-    │   ├── tc.py            # tc / netem / IFB logic
-    │   └── utils.py         # iface detection, formatting, root checks
-    └── ui/
-        ├── __init__.py
-        ├── app.py           # Textual App
-        ├── widgets.py       # Metric cards, banners, interface bar
-        └── styles.tcss      # Theme & layout CSS
-```
-
----
-
-## How it works
+## How traffic control works
 
 | Direction | Mechanism |
 |-----------|-----------|
-| **Upload** | `tc` HTB class on interface egress + optional `netem` loss |
-| **Download** | Ingress redirected to `ifb0`, then HTB + netem on IFB egress |
-| **Loss** | `netem loss X%` on shaped paths |
-| **Reset** | Delete root/ingress qdiscs; bring `ifb0` down |
+| Upload | HTB + netem on interface egress |
+| Download | Ingress → `ifb0`, then HTB + netem |
+| Loss | `netem loss` on shaped paths |
+| Reset | Remove root/ingress qdiscs; down `ifb0` |
 
----
+## Project layout
 
-## Safety notes
-
-- Traffic control affects **all** traffic on the selected interface.
-- Always use **Reset** when finished.
-- Requires root; the app re-execs with `sudo` (absolute path) if launched as a normal user.
-- IFB (`ifb0`) is used for download shaping; it is brought down on reset.
-
----
-
-## Troubleshooting
-
-| Problem | Fix |
-|---------|-----|
-| `sudo: netlimit: command not found` | Use `sudo .venv/bin/netlimit` or install the `/usr/local/bin` link |
-| `Sorry, try again` | Sudo password rejected — run `sudo whoami` |
-| `Missing required command(s): tc` | Install `iproute2` |
-| Download limit has no effect | `sudo modprobe ifb` |
-| No interface detected | Pass `-i eth0` / `-i wlan0` |
-| Rules persist after crash | `sudo .venv/bin/netlimit` → press `r` (Reset) |
-
-Check kernel state:
-
-```bash
-tc qdisc show
-tc class show dev eth0
-tc qdisc show dev ifb0
+```
+netlimit/
+├── Cargo.toml
+├── README.md
+└── src/
+    ├── main.rs       # CLI flags + terminal lifecycle
+    ├── app.rs        # State, keys, mouse, apply/reset
+    ├── ui.rs         # Layout & widgets
+    ├── theme.rs      # Colors / styles
+    ├── tc.rs         # tc / netem / IFB
+    ├── netinfo.rs    # Interface discovery
+    ├── presets.rs    # Built-in + saved presets
+    └── elevate.rs    # sudo re-exec
 ```
 
----
+## Safety
+
+- Affects **all** traffic on the selected interface
+- Always **Reset** when finished
+- Requires root for rule changes
 
 ## License
 
