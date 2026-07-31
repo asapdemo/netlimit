@@ -9,11 +9,15 @@ use crossterm::event::{
 use ratatui::layout::Rect;
 use ratatui::DefaultTerminal;
 
+use std::sync::mpsc::Receiver;
+
+use crate::monitor::{PingMonitor, SampleHistory, ThroughputMonitor};
 use crate::netinfo::list_interfaces;
 use crate::presets::{
     self, all_presets, save_user_presets, slider_max, slider_ratio_to_value, Preset,
 };
-use crate::tc::{format_loss, format_rate, is_root, Limits, Metric, TcError, TrafficController};
+use crate::speedtest::{self, SpeedTestEvent, SpeedTestResult};
+use crate::tc::{is_root, Limits, Metric, TcError, TrafficController};
 use crate::ui;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -67,6 +71,7 @@ pub struct App {
     pub hit_metrics: [MetricHits; 3],
     pub hit_apply: Rect,
     pub hit_reset: Rect,
+    pub hit_speedtest: Rect,
     pub hit_quit: Rect,
     /// Clickable rows in the interface list (parallel to `interfaces`).
     pub hit_ifaces: Vec<Rect>,
@@ -76,6 +81,16 @@ pub struct App {
     pub iface_scroll: usize,
     /// Active slider drag (metric being scrubbed).
     pub dragging: Option<Metric>,
+    /// Live ↓/↑ from /proc/net/dev + path loss from ping.
+    pub throughput: ThroughputMonitor,
+    pub ping: PingMonitor,
+    pub history: SampleHistory,
+    pub speedtest_running: bool,
+    pub speedtest_phase: String,
+    pub speedtest_detail: String,
+    pub last_speedtest: Option<SpeedTestResult>,
+    speedtest_rx: Option<Receiver<SpeedTestEvent>>,
+    last_sample_at: Instant,
     tick: u64,
 }
 
@@ -129,12 +144,22 @@ impl App {
             hit_metrics: [MetricHits::default(); 3],
             hit_apply: Rect::default(),
             hit_reset: Rect::default(),
+            hit_speedtest: Rect::default(),
             hit_quit: Rect::default(),
             hit_ifaces: Vec::new(),
             hit_presets: Vec::new(),
             hit_save_preset: Rect::default(),
             iface_scroll: 0,
             dragging: None,
+            throughput: ThroughputMonitor::default(),
+            ping: PingMonitor::default(),
+            history: SampleHistory::default(),
+            speedtest_running: false,
+            speedtest_phase: String::new(),
+            speedtest_detail: String::new(),
+            last_speedtest: None,
+            speedtest_rx: None,
+            last_sample_at: Instant::now(),
             tick: 0,
         };
 
@@ -157,6 +182,9 @@ impl App {
         let mut last_tick = Instant::now();
 
         while !self.should_quit {
+            self.poll_speedtest();
+            self.sample_monitors();
+
             terminal.draw(|frame| ui::draw(frame, &mut self))?;
 
             let timeout = tick_rate.saturating_sub(last_tick.elapsed());
@@ -175,6 +203,108 @@ impl App {
             }
         }
         Ok(())
+    }
+
+    fn sample_monitors(&mut self) {
+        self.ping.poll();
+        let now = Instant::now();
+        // Throughput + history every 500ms
+        if now.duration_since(self.last_sample_at) >= Duration::from_millis(500) {
+            let iface = self.current_iface().to_string();
+            self.throughput.tick(&iface);
+            self.history.push(
+                self.throughput.down_mbps,
+                self.throughput.up_mbps,
+                self.ping.loss_percent,
+            );
+            self.last_sample_at = now;
+        }
+    }
+
+    fn poll_speedtest(&mut self) {
+        loop {
+            let event = {
+                let Some(rx) = self.speedtest_rx.as_ref() else {
+                    return;
+                };
+                match rx.try_recv() {
+                    Ok(ev) => ev,
+                    Err(std::sync::mpsc::TryRecvError::Empty) => return,
+                    Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                        if self.speedtest_running {
+                            self.speedtest_running = false;
+                            self.speedtest_rx = None;
+                            self.set_banner(
+                                "Speed test worker ended unexpectedly",
+                                BannerLevel::Error,
+                            );
+                        }
+                        return;
+                    }
+                }
+            };
+
+            match event {
+                SpeedTestEvent::Progress { phase, detail } => {
+                    self.speedtest_phase = phase.clone();
+                    self.speedtest_detail = detail.clone();
+                    self.set_banner(
+                        format!("Speed test [{phase}]: {detail}"),
+                        BannerLevel::Info,
+                    );
+                }
+                SpeedTestEvent::Finished {
+                    download_mbps,
+                    upload_mbps,
+                    latency_ms,
+                    jitter_ms,
+                } => {
+                    self.speedtest_running = false;
+                    self.speedtest_rx = None;
+                    self.speedtest_phase = "done".into();
+                    self.speedtest_detail = format!(
+                        "↓ {download_mbps:.1}  ↑ {upload_mbps:.1}  lat {latency_ms:.0}ms  jit {jitter_ms:.0}ms"
+                    );
+                    self.last_speedtest = Some(SpeedTestResult {
+                        download_mbps,
+                        upload_mbps,
+                        latency_ms,
+                        jitter_ms,
+                        at: Some(Instant::now()),
+                    });
+                    self.set_banner(
+                        format!(
+                            "✓ Cloudflare: ↓ {download_mbps:.1} Mbps  ↑ {upload_mbps:.1} Mbps  ·  {latency_ms:.0} ms ± {jitter_ms:.0}"
+                        ),
+                        BannerLevel::Success,
+                    );
+                    return;
+                }
+                SpeedTestEvent::Failed(err) => {
+                    self.speedtest_running = false;
+                    self.speedtest_rx = None;
+                    self.speedtest_phase = "error".into();
+                    self.speedtest_detail = err.clone();
+                    self.set_banner(format!("✗ Speed test failed: {err}"), BannerLevel::Error);
+                    return;
+                }
+            }
+        }
+    }
+
+    fn start_speedtest(&mut self) {
+        if self.speedtest_running {
+            self.set_banner("Speed test already running…", BannerLevel::Warn);
+            return;
+        }
+        self.speedtest_running = true;
+        self.speedtest_phase = "starting".into();
+        self.speedtest_detail = "connecting to Cloudflare…".into();
+        self.speedtest_rx = Some(speedtest::start());
+        self.set_banner(
+            "Cloudflare speed test started (runs in background)…",
+            BannerLevel::Info,
+        );
     }
 
     pub fn current_iface(&self) -> &str {
@@ -261,6 +391,7 @@ impl App {
             KeyCode::Char('q') | KeyCode::Esc => self.should_quit = true,
             KeyCode::Char('a') => self.do_apply(),
             KeyCode::Char('r') => self.do_reset(),
+            KeyCode::Char('t') => self.start_speedtest(),
             KeyCode::Char('i') => self.cycle_iface(1),
             KeyCode::Char('d') => self.selected = Metric::Download,
             KeyCode::Char('u') => self.selected = Metric::Upload,
@@ -354,6 +485,8 @@ impl App {
                     self.do_apply();
                 } else if contains(self.hit_reset, col, row) {
                     self.do_reset();
+                } else if contains(self.hit_speedtest, col, row) {
+                    self.start_speedtest();
                 } else if contains(self.hit_quit, col, row) {
                     self.should_quit = true;
                 }
@@ -523,8 +656,7 @@ impl App {
             return;
         }
         self.iface_idx = idx;
-        // Keep selection visible in scrolled list (caller may pass visible height later;
-        // scroll is adjusted in UI when drawing, and here for keyboard).
+        self.throughput.reset();
         let name = self.current_iface().to_string();
         if let Some(ctrl) = self.controller.as_mut() {
             if let Err(e) = ctrl.set_interface(name.clone()) {
@@ -644,25 +776,17 @@ impl App {
         self.busy = false;
     }
 
-    pub fn applied_summary_line(&self) -> String {
-        if !self.applied.is_active() {
-            format!(
-                "No limits active on {}",
-                if self.applied.interface.is_empty() {
-                    self.current_iface()
-                } else {
-                    &self.applied.interface
-                }
-            )
-        } else {
-            format!(
-                "{}   ↓ {}   ↑ {}   loss {}",
-                self.applied.interface,
-                format_rate(self.applied.download_mbps),
-                format_rate(self.applied.upload_mbps),
-                format_loss(self.applied.loss_percent),
-            )
-        }
+    /// True when draft (UI) values differ from last successfully applied rules.
+    pub fn draft_differs_from_applied(&self) -> bool {
+        let draft = self.draft_limits();
+        let a = &self.applied;
+        // Compare rates with small epsilon; treat 0 as unlimited both sides.
+        let same_dl = (draft.download_mbps - a.download_mbps).abs() < 0.05;
+        let same_ul = (draft.upload_mbps - a.upload_mbps).abs() < 0.05;
+        let same_loss = (draft.loss_percent - a.loss_percent).abs() < 0.05;
+        let same_iface = draft.interface == a.interface
+            || (a.interface.is_empty() && draft.interface == self.current_iface());
+        !(same_dl && same_ul && same_loss && same_iface)
     }
 }
 

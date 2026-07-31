@@ -11,6 +11,8 @@ Built with **Rust** + **ratatui**. Limits download, upload, and packet loss via 
 - Full interface list (click to select)
 - Keyboard + mouse (`−`/`+`, sliders, buttons)
 - Presets (built-in + custom, save/delete)
+- **Live sparklines** — interface ↓/↑ throughput + ICMP path loss
+- **Cloudflare speed test** — download / upload / latency / jitter (`t`)
 - Apply / Reset with status feedback
 - Single binary: `netlimit`
 
@@ -75,8 +77,19 @@ Loading only fills the draft — press **Apply** to enforce.
 | `x` / `Del` | Delete selected custom preset |
 | `a` | Apply |
 | `r` | Reset |
+| `t` | Cloudflare speed test |
 | `i` / `[` `]` | Cycle interface |
 | `q` / `Esc` | Quit |
+
+### Live graphs & speed test
+
+| Graph | Source |
+|-------|--------|
+| ↓ / ↑ sparklines | `/proc/net/dev` counters on the selected interface (~0.5s) |
+| LOSS sparkline | Rolling ICMP loss to `1.1.1.1` (system `ping`) |
+| Speed test | Cloudflare HTTP (`speed.cloudflare.com` `__down` / `__up`) |
+
+Speed test runs in a background thread; UI stays interactive. Results appear in the LIVE panel and banner.
 
 ## How traffic control works
 

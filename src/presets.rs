@@ -37,15 +37,6 @@ impl Preset {
         }
     }
 
-    pub fn short_label(&self) -> String {
-        // Keep chip labels compact for the bar.
-        if self.name.chars().count() <= 12 {
-            self.name.clone()
-        } else {
-            format!("{}…", self.name.chars().take(11).collect::<String>())
-        }
-    }
-
     pub fn summary(&self) -> String {
         let dl = if self.download_mbps <= 0.0 {
             "∞".into()

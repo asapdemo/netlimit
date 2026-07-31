@@ -2,8 +2,10 @@
 
 mod app;
 mod elevate;
+mod monitor;
 mod netinfo;
 mod presets;
+mod speedtest;
 mod tc;
 mod theme;
 mod ui;
