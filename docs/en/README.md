@@ -57,32 +57,49 @@ sudo dnf install iproute-tc
 
 You also need a working `ping` (usually already installed).
 
-### Build from source
+### 1. Clone, build, and run locally
+
+Needs **Rust 1.74+**.
 
 ```bash
 git clone https://github.com/virtuoz-afk/netlimit.git
 cd netlimit
 cargo build --release
+sudo ./target/release/netlimit
 ```
 
-Binary path:
-
-```text
-./target/release/netlimit
-```
-
-### Install system-wide
+Optional — install so `sudo netlimit` works from any directory:
 
 ```bash
 sudo install -m 755 target/release/netlimit /usr/local/bin/netlimit
+sudo netlimit
 ```
 
-### Run
+### 2. Prebuilt binaries
+
+Download a Linux archive from [Releases](https://github.com/virtuoz-afk/netlimit/releases) and run it.
+
+**x86_64** (typical PC / Arch / Ubuntu desktop):
 
 ```bash
+curl -LO https://github.com/virtuoz-afk/netlimit/releases/latest/download/netlimit-linux-x86_64.tar.gz
+tar -xzf netlimit-linux-x86_64.tar.gz
+sudo ./netlimit-linux-x86_64/netlimit
+```
+
+**aarch64** (Raspberry Pi 64-bit, ARM servers):
+
+```bash
+curl -LO https://github.com/virtuoz-afk/netlimit/releases/latest/download/netlimit-linux-aarch64.tar.gz
+tar -xzf netlimit-linux-aarch64.tar.gz
+sudo ./netlimit-linux-aarch64/netlimit
+```
+
+Optional — install system-wide (x86_64 example):
+
+```bash
+sudo install -m 755 netlimit-linux-x86_64/netlimit /usr/local/bin/netlimit
 sudo netlimit
-# or without installing:
-sudo ./target/release/netlimit
 ```
 
 ### Useful flags and CLI commands

@@ -56,73 +56,58 @@ sudo dnf install iproute-tc
 
 ---
 
-## Install
+## Download
 
-### Option A — Build from source (recommended for development)
+Two options:
+
+### 1. Clone, build, and run locally
+
+Needs **Rust 1.74+**.
 
 ```bash
-# 1. Clone
 git clone https://github.com/virtuoz-afk/netlimit.git
 cd netlimit
-
-# 2. Build release binary
 cargo build --release
-
-# 3. Run with full path (always works with sudo)
 sudo ./target/release/netlimit
+```
 
-# 4. Optional: install system-wide
+Optional — install so `sudo netlimit` works from any directory:
+
+```bash
 sudo install -m 755 target/release/netlimit /usr/local/bin/netlimit
 sudo netlimit
 ```
 
-### Option B — Install the release binary into `/usr/local/bin`
+`sudo` uses a restricted `PATH`, so either run the binary by full path (`sudo ./target/release/netlimit`) or install it into `/usr/local/bin`.
 
-After building (or downloading a release asset if available):
+### 2. Prebuilt binaries
 
-```bash
-sudo install -m 755 ./target/release/netlimit /usr/local/bin/netlimit
-sudo netlimit
-```
+Download a Linux archive from [Releases](https://github.com/virtuoz-afk/netlimit/releases) and run it.
 
-Why a **full path or `/usr/local/bin` link**?  
-`sudo` uses a restricted `PATH` and often cannot see `./target/release` or `~/.cargo/bin`.
-
-### Option C — Cargo install (from local tree)
+**x86_64** (typical PC / Arch / Ubuntu desktop):
 
 ```bash
-cd netlimit
-cargo install --path .
-# then:
-sudo "$(which netlimit)"
-# or:
-sudo ln -sf ~/.cargo/bin/netlimit /usr/local/bin/netlimit
-sudo netlimit
-```
-
-### Option D — Prebuilt GitHub Releases (if published)
-
-If [Releases](https://github.com/virtuoz-afk/netlimit/releases) provide archives:
-
-```bash
-# x86_64 (typical PC / Arch / Ubuntu desktop)
 curl -LO https://github.com/virtuoz-afk/netlimit/releases/latest/download/netlimit-linux-x86_64.tar.gz
 tar -xzf netlimit-linux-x86_64.tar.gz
+sudo ./netlimit-linux-x86_64/netlimit
+```
+
+**aarch64** (Raspberry Pi 64-bit, ARM servers):
+
+```bash
+curl -LO https://github.com/virtuoz-afk/netlimit/releases/latest/download/netlimit-linux-aarch64.tar.gz
+tar -xzf netlimit-linux-aarch64.tar.gz
+sudo ./netlimit-linux-aarch64/netlimit
+```
+
+Optional — install system-wide (x86_64 example):
+
+```bash
 sudo install -m 755 netlimit-linux-x86_64/netlimit /usr/local/bin/netlimit
 sudo netlimit
 ```
 
-```bash
-# aarch64 (Raspberry Pi 64-bit, ARM servers)
-curl -LO https://github.com/virtuoz-afk/netlimit/releases/latest/download/netlimit-linux-aarch64.tar.gz
-tar -xzf netlimit-linux-aarch64.tar.gz
-sudo install -m 755 netlimit-linux-aarch64/netlimit /usr/local/bin/netlimit
-sudo netlimit
-```
-
-> Adjust archive names to match the actual release assets.
-
-### Verify install
+### Verify
 
 ```bash
 netlimit --version

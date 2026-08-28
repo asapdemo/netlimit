@@ -370,14 +370,7 @@ fn draw_metric_card(
         theme::SURFACE
     };
 
-    // Full readable titles (icons + words)
-    let title = match metric {
-        Metric::Download => " ↓ Download ",
-        Metric::Upload => " ↑ Upload ",
-        Metric::Loss => " ⚠ Loss ",
-        Metric::Delay => " ⏱ Delay ",
-        Metric::Jitter => " ∿ Jitter ",
-    };
+    let title = format!(" {} {} ", metric.icon(), metric.label());
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(border)
@@ -387,6 +380,10 @@ fn draw_metric_card(
             Style::default()
                 .fg(if selected { accent } else { theme::TEXT_DIM })
                 .add_modifier(Modifier::BOLD),
+        ))
+        .title_bottom(Span::styled(
+            format!(" {} ", metric.unit_hint()),
+            Style::default().fg(theme::TEXT_MUTED),
         ));
 
     let inner = block.inner(area);
@@ -417,11 +414,7 @@ fn draw_metric_card(
             .split(inner)
     };
 
-    let unit = match metric {
-        Metric::Download | Metric::Upload => "Mbps",
-        Metric::Loss => "%",
-        Metric::Delay | Metric::Jitter => "ms",
-    };
+    let unit = metric.unit();
     // Give unit enough room for "Mbps"
     let unit_w = (unit.chars().count() as u16 + 1).max(3);
     let value_row = Layout::default()

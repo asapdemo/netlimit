@@ -57,32 +57,49 @@ sudo dnf install iproute-tc
 
 Також потрібен `ping` (зазвичай уже встановлений).
 
-### Збірка з вихідного коду
+### 1. Клонувати репозиторій, зібрати й запустити локально
+
+Потрібен **Rust 1.74+**.
 
 ```bash
 git clone https://github.com/virtuoz-afk/netlimit.git
 cd netlimit
 cargo build --release
+sudo ./target/release/netlimit
 ```
 
-Шлях до бінарника:
-
-```text
-./target/release/netlimit
-```
-
-### Системне встановлення
+За бажанням — встановити, щоб `sudo netlimit` працював з будь-якої директорії:
 
 ```bash
 sudo install -m 755 target/release/netlimit /usr/local/bin/netlimit
+sudo netlimit
 ```
 
-### Запуск
+### 2. Готові бінарники
+
+Завантажте Linux-архів зі сторінки [Releases](https://github.com/virtuoz-afk/netlimit/releases) і запустіть.
+
+**x86_64** (типовий ПК / Arch / Ubuntu desktop):
 
 ```bash
+curl -LO https://github.com/virtuoz-afk/netlimit/releases/latest/download/netlimit-linux-x86_64.tar.gz
+tar -xzf netlimit-linux-x86_64.tar.gz
+sudo ./netlimit-linux-x86_64/netlimit
+```
+
+**aarch64** (Raspberry Pi 64-bit, ARM-сервери):
+
+```bash
+curl -LO https://github.com/virtuoz-afk/netlimit/releases/latest/download/netlimit-linux-aarch64.tar.gz
+tar -xzf netlimit-linux-aarch64.tar.gz
+sudo ./netlimit-linux-aarch64/netlimit
+```
+
+За бажанням — системне встановлення (приклад для x86_64):
+
+```bash
+sudo install -m 755 netlimit-linux-x86_64/netlimit /usr/local/bin/netlimit
 sudo netlimit
-# або без встановлення:
-sudo ./target/release/netlimit
 ```
 
 ### Корисні прапорці та CLI-команди

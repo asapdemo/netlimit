@@ -653,11 +653,11 @@ impl Metric {
 
     pub fn label(self) -> &'static str {
         match self {
-            Metric::Download => "DOWNLOAD",
-            Metric::Upload => "UPLOAD",
-            Metric::Loss => "PACKET LOSS",
-            Metric::Delay => "DELAY",
-            Metric::Jitter => "JITTER",
+            Metric::Download => "Download",
+            Metric::Upload => "Upload",
+            Metric::Loss => "Loss",
+            Metric::Delay => "Delay",
+            Metric::Jitter => "Jitter",
         }
     }
 
@@ -668,6 +668,14 @@ impl Metric {
             Metric::Loss => "⚠",
             Metric::Delay => "⏱",
             Metric::Jitter => "∿",
+        }
+    }
+
+    pub fn unit(self) -> &'static str {
+        match self {
+            Metric::Download | Metric::Upload => "Mbps",
+            Metric::Loss => "%",
+            Metric::Delay | Metric::Jitter => "ms",
         }
     }
 
@@ -741,6 +749,18 @@ mod tests {
         assert_eq!(format_loss(0.0), "0%");
         assert_eq!(format_loss(3.5), "3.5%");
         assert_eq!(format_value(Metric::Download, 0.0), "∞");
+    }
+
+    #[test]
+    fn metric_display_helpers() {
+        assert_eq!(Metric::Download.label(), "Download");
+        assert_eq!(Metric::Download.icon(), "↓");
+        assert_eq!(Metric::Download.unit(), "Mbps");
+        assert_eq!(Metric::Download.unit_hint(), "Mbps · 0 = ∞");
+        assert_eq!(Metric::Loss.label(), "Loss");
+        assert_eq!(Metric::Loss.unit(), "%");
+        assert_eq!(Metric::Delay.unit_hint(), "ms base latency");
+        assert_eq!(Metric::Jitter.icon(), "∿");
     }
 
     #[test]
