@@ -109,6 +109,9 @@ jobs:
       (github.event_name == 'workflow_dispatch' && inputs.create_release)
     runs-on: ubuntu-latest
     steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
       - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
@@ -116,7 +119,7 @@ jobs:
           merge-multiple: true
 
       - name: List release files
-        run: find artifacts -type f | sort && ls -lh artifacts/
+        run: find artifacts -type f | sort && ls -lh artifacts/ install.sh
 
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
@@ -127,5 +130,6 @@ jobs:
           files: |
             artifacts/*.tar.gz
             artifacts/*.sha256
+            install.sh
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

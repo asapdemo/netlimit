@@ -58,7 +58,27 @@ sudo dnf install iproute-tc
 
 ## Download
 
-Two options:
+### One-command install (Raspberry Pi / Linux)
+
+After a GitHub Release is published, install the matching binary on **64-bit Raspberry Pi OS** (`aarch64`) or **x86_64 Linux**:
+
+```bash
+curl -sSfL https://raw.githubusercontent.com/virtuoz-afk/netlimit/main/install.sh | sh
+sudo netlimit
+```
+
+The script detects the CPU, downloads the latest release, checks the SHA-256 checksum, and installs `netlimit` to `/usr/local/bin`.
+
+Pin a version:
+
+```bash
+curl -sSfL https://raw.githubusercontent.com/virtuoz-afk/netlimit/main/install.sh | \
+  NETLIMIT_VERSION=v0.2.0 sh
+```
+
+Raspberry Pi must be running a **64-bit** OS (`uname -m` → `aarch64`). 32-bit Raspberry Pi OS is not built.
+
+Two other options:
 
 ### 1. Clone, build, and run locally
 
@@ -80,7 +100,7 @@ sudo netlimit
 
 `sudo` uses a restricted `PATH`, so either run the binary by full path (`sudo ./target/release/netlimit`) or install it into `/usr/local/bin`.
 
-### 2. Prebuilt binaries
+### 2. Prebuilt binaries (manual)
 
 Download a Linux archive from [Releases](https://github.com/virtuoz-afk/netlimit/releases) and run it.
 
@@ -228,6 +248,7 @@ Full guide: [docs/en/README.md](docs/en/README.md) · [docs/uk/README.md](docs/u
 netlimit/
 ├── Cargo.toml
 ├── README.md                 # this file
+├── install.sh                # one-command Linux / Raspberry Pi installer
 ├── docs/
 │   ├── en/README.md          # English user guide
 │   └── uk/README.md          # Ukrainian user guide

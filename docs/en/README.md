@@ -57,6 +57,19 @@ sudo dnf install iproute-tc
 
 You also need a working `ping` (usually already installed).
 
+### One-command install (Raspberry Pi / Linux)
+
+After a GitHub Release is published:
+
+```bash
+curl -sSfL https://raw.githubusercontent.com/virtuoz-afk/netlimit/main/install.sh | sh
+sudo netlimit
+```
+
+Works on 64-bit Raspberry Pi OS (`aarch64`) and x86_64 Linux. The script verifies the release checksum and installs to `/usr/local/bin`.
+
+32-bit Raspberry Pi OS is not supported.
+
 ### 1. Clone, build, and run locally
 
 Needs **Rust 1.74+**.
