@@ -128,6 +128,7 @@ sudo netlimit --no-sudo         # do not re-exec (Apply needs root)
 
 # Shape / clear (root)
 sudo netlimit apply --download 10 --upload 2 --loss 1
+sudo netlimit apply --download 0.5 --upload 0.5
 sudo netlimit apply --preset 4G
 sudo netlimit reset
 
@@ -193,14 +194,16 @@ Layout (top to bottom):
 
 | Control | Unit | Meaning |
 |---------|------|---------|
-| **↓ Download** | Mbps | Max download (0 = unlimited) |
-| **↑ Upload** | Mbps | Max upload (0 = unlimited) |
+| **↓ Download** | Mbps | Max download (0 = unlimited; fractions such as 0.5 allowed) |
+| **↑ Upload** | Mbps | Max upload (0 = unlimited; fractions such as 0.5 allowed) |
 | **⚠ Loss** | % | Packet loss |
 | **⏱ Delay** | ms | Base latency |
 | **∿ Jitter** | ms | Latency variation |
 
 Values in the UI are a **draft** until you **Apply**.  
 The **Current applied limits** panel shows what is actually on the wire.
+
+Fractional Mbps is allowed (for example **0.5**). Select Download or Upload and press **e** or **Enter**, type the number, then **Enter** again. From unlimited, `+` still jumps to 1 Mbps. Once the value is under 1 Mbps — or when you step down from 1 — `−` / `+` moves by **0.1**. At 1 Mbps and above the step stays **1** (`Shift` = 10). The same values work on the CLI: `sudo netlimit apply --download 0.5`.
 
 ---
 
@@ -277,7 +280,8 @@ Press **`h`** or **Hist**.
 | Key | Action |
 |-----|--------|
 | `↑` `↓` `Tab` | Select metric |
-| `←` `→` `+` `−` | Adjust |
+| `←` `→` `+` `−` | Adjust (0.1 Mbps while under 1, else 1) |
+| `e` / `Enter` | Type a value (e.g. `0.5`); `Esc` cancels |
 | `Shift` + adjust | Larger step |
 | `d` `u` `l` `y` `j` | Focus Download / Upload / Loss / Delay / Jitter |
 | `1`–`9` | Load preset |

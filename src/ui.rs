@@ -50,7 +50,7 @@ fn draw_main(frame: &mut Frame, area: Rect, app: &mut App) {
     draw_ping_panel(frame, root[3], app);
     draw_actions(frame, root[4], app);
     draw_banner(frame, root[5], app);
-    draw_keys_main(frame, root[6]);
+    draw_keys_main(frame, root[6], app);
 }
 
 fn draw_interface(frame: &mut Frame, area: Rect, app: &mut App) {
@@ -370,6 +370,12 @@ fn draw_metric_card(
         theme::SURFACE
     };
 
+    let editing = app.editing == Some(metric);
+    let hint = if editing {
+        "Enter save · Esc cancel"
+    } else {
+        metric.unit_hint()
+    };
     let title = format!(" {} {} ", metric.icon(), metric.label());
     let block = Block::default()
         .borders(Borders::ALL)
@@ -382,8 +388,12 @@ fn draw_metric_card(
                 .add_modifier(Modifier::BOLD),
         ))
         .title_bottom(Span::styled(
-            format!(" {} ", metric.unit_hint()),
-            Style::default().fg(theme::TEXT_MUTED),
+            format!(" {hint} "),
+            Style::default().fg(if editing {
+                accent
+            } else {
+                theme::TEXT_MUTED
+            }),
         ));
 
     let inner = block.inner(area);
@@ -428,6 +438,7 @@ fn draw_metric_card(
         .split(body[0]);
 
     hits.dec = value_row[0];
+    hits.value = value_row[1];
     hits.inc = value_row[2];
 
     frame.render_widget(
@@ -461,14 +472,26 @@ fn draw_metric_card(
         value_row[2],
     );
 
-    let value = format_value(metric, app.metric_value(metric));
+    let value = if editing {
+        if app.edit_buf.is_empty() {
+            "_".to_string()
+        } else {
+            format!("{}_", app.edit_buf)
+        }
+    } else {
+        format_value(metric, app.metric_value(metric))
+    };
     frame.render_widget(
         Paragraph::new(value)
             .alignment(Alignment::Center)
             .style(
                 Style::default()
-                    .fg(accent)
-                    .bg(bg)
+                    .fg(if editing {
+                        theme::TEXT_INVERSE
+                    } else {
+                        accent
+                    })
+                    .bg(if editing { accent } else { bg })
                     .add_modifier(Modifier::BOLD),
             ),
         value_row[1],
@@ -1608,21 +1631,37 @@ fn draw_banner(frame: &mut Frame, area: Rect, app: &App) {
     );
 }
 
-fn draw_keys_main(frame: &mut Frame, area: Rect) {
-    let line = Line::from(vec![
-        key("a"),
-        dim(" apply  "),
-        key("t"),
-        dim(" speed  "),
-        key("h"),
-        dim(" history  "),
-        key("y/j"),
-        dim(" dly/jit  "),
-        key("r"),
-        dim(" reset  "),
-        key("q"),
-        dim(" quit"),
-    ]);
+fn draw_keys_main(frame: &mut Frame, area: Rect, app: &App) {
+    let line = if app.editing.is_some() {
+        Line::from(vec![
+            dim("typing  "),
+            key("0-9"),
+            dim(" .  "),
+            key("Enter"),
+            dim(" set  "),
+            key("Esc"),
+            dim(" cancel  "),
+            key("Bksp"),
+            dim(" delete"),
+        ])
+    } else {
+        Line::from(vec![
+            key("e"),
+            dim(" type  "),
+            key("a"),
+            dim(" apply  "),
+            key("t"),
+            dim(" speed  "),
+            key("h"),
+            dim(" history  "),
+            key("y/j"),
+            dim(" dly/jit  "),
+            key("r"),
+            dim(" reset  "),
+            key("q"),
+            dim(" quit"),
+        ])
+    };
     let p = Paragraph::new(line)
         .alignment(Alignment::Center)
         .style(Style::default().bg(theme::BG));

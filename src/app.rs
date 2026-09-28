@@ -18,7 +18,7 @@ use crate::presets::{
     self, all_presets, save_user_presets, slider_max, slider_ratio_to_value, Preset,
 };
 use crate::speedtest::{self, SampleKind, SpeedTestEvent, SpeedTestResult, TestScope};
-use crate::tc::{is_root, Limits, Metric, TcError, TrafficController};
+use crate::tc::{format_value, is_root, Limits, Metric, TcError, TrafficController};
 use crate::ui;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -40,6 +40,7 @@ pub struct MetricHits {
     pub card: Rect,
     pub dec: Rect,
     pub inc: Rect,
+    pub value: Rect,
     pub slider: Rect,
 }
 
@@ -104,6 +105,9 @@ pub struct App {
     pub iface_scroll: usize,
     /// Active slider drag (metric being scrubbed).
     pub dragging: Option<Metric>,
+    /// Metric whose numeric value is being typed (`e` / Enter).
+    pub editing: Option<Metric>,
+    pub edit_buf: String,
     /// Live ↓/↑ from /proc/net/dev + path loss from ping.
     pub throughput: ThroughputMonitor,
     pub ping: PingMonitor,
@@ -172,7 +176,7 @@ impl App {
                 ..Default::default()
             },
             banner: Banner {
-                message: "Ready — use − / + , sliders, or presets".into(),
+                message: "Ready — −/+ , e to type a rate (e.g. 0.5 Mbps), or presets".into(),
                 level: BannerLevel::Info,
             },
             is_root: is_root(),
@@ -199,6 +203,8 @@ impl App {
             hit_save_preset: Rect::default(),
             iface_scroll: 0,
             dragging: None,
+            editing: None,
+            edit_buf: String::new(),
             throughput: ThroughputMonitor::default(),
             ping: PingMonitor::default(),
             history: SampleHistory::default(),
@@ -465,6 +471,7 @@ impl App {
     }
 
     pub fn open_speedtest_screen(&mut self) {
+        self.cancel_edit();
         self.screen = Screen::SpeedTest;
         self.speedtest_error = None;
     }
@@ -566,8 +573,10 @@ impl App {
         // Allow keys/buttons above slider max; clamp to metric absolute max.
         let v = v.clamp(0.0, m.max());
         let v = match m {
+            // 0.001 Mbps = 1 kbit, so 0.5 survives and tc gets an integer kbit.
+            Metric::Download | Metric::Upload => (v * 1000.0).round() / 1000.0,
             Metric::Loss => (v * 10.0).round() / 10.0,
-            Metric::Download | Metric::Upload | Metric::Delay | Metric::Jitter => {
+            Metric::Delay | Metric::Jitter => {
                 if (v - v.round()).abs() < 1e-9 {
                     v.round()
                 } else {
@@ -629,7 +638,7 @@ impl App {
             );
         } else {
             self.set_banner(
-                "Ready — use − / + , sliders, or presets",
+                "Ready — −/+ , e to type a rate (e.g. 0.5 Mbps), or presets",
                 BannerLevel::Info,
             );
         }
@@ -691,6 +700,11 @@ impl App {
     }
 
     fn on_key_main(&mut self, key: KeyEvent) {
+        if self.editing.is_some() {
+            self.on_key_edit(key);
+            return;
+        }
+
         let coarse = key.modifiers.contains(KeyModifiers::SHIFT);
 
         match key.code {
@@ -729,6 +743,7 @@ impl App {
             KeyCode::Char('[') => self.cycle_iface(-1),
             KeyCode::PageDown => self.cycle_iface(1),
             KeyCode::PageUp => self.cycle_iface(-1),
+            KeyCode::Enter | KeyCode::Char('e') => self.begin_edit(),
             KeyCode::Char('0') => self.set_metric_value(self.selected, 0.0),
             KeyCode::Char(c) if c.is_ascii_digit() && c != '0' => {
                 let idx = (c as u8 - b'1') as usize;
@@ -782,13 +797,22 @@ impl App {
                 for (i, hits) in self.hit_metrics.iter().enumerate() {
                     let metric = Metric::from_index(i);
                     if contains(hits.dec, col, row) {
+                        self.cancel_edit();
                         self.selected = metric;
                         self.adjust(-1, false);
                         return;
                     }
                     if contains(hits.inc, col, row) {
+                        self.cancel_edit();
                         self.selected = metric;
                         self.adjust(1, false);
+                        return;
+                    }
+                    if contains(hits.value, col, row) {
+                        if self.editing != Some(metric) {
+                            self.selected = metric;
+                            self.begin_edit();
+                        }
                         return;
                     }
                     if contains(hits.slider, col, row) {
@@ -798,6 +822,9 @@ impl App {
                         return;
                     }
                     if contains(hits.card, col, row) {
+                        if self.editing.is_some() && self.editing != Some(metric) {
+                            self.cancel_edit();
+                        }
                         self.selected = metric;
                         return;
                     }
@@ -875,6 +902,7 @@ impl App {
     }
 
     fn set_from_slider(&mut self, metric: Metric, col: u16, track: Rect) {
+        self.cancel_edit();
         if track.width == 0 {
             return;
         }
@@ -893,17 +921,112 @@ impl App {
     }
 
     fn adjust(&mut self, direction: i32, coarse: bool) {
+        self.cancel_edit();
         let m = self.selected;
-        let step = if coarse {
-            m.large_step()
-        } else {
-            m.small_step()
-        };
         let cur = self.metric_value(m);
+        let step = m.step(cur, direction, coarse);
         self.set_metric_value(m, cur + direction as f64 * step);
     }
 
+    fn cancel_edit(&mut self) {
+        self.editing = None;
+        self.edit_buf.clear();
+    }
+
+    fn begin_edit(&mut self) {
+        let m = self.selected;
+        let v = self.metric_value(m);
+        self.edit_buf = if v <= 0.0 {
+            String::new()
+        } else {
+            format_value(m, v)
+        };
+        self.editing = Some(m);
+        self.set_banner(
+            format!(
+                "Type {} ({}) — e.g. 0.5 · Enter save · Esc cancel · empty = 0",
+                m.label(),
+                m.unit()
+            ),
+            BannerLevel::Info,
+        );
+    }
+
+    /// Commit the typed value. Returns false if the buffer is not a valid number.
+    fn commit_edit(&mut self) -> bool {
+        let Some(metric) = self.editing else {
+            return true;
+        };
+        let raw = self.edit_buf.trim().to_string();
+        if raw.is_empty() || raw == "." {
+            self.set_metric_value(metric, 0.0);
+            self.cancel_edit();
+            self.set_banner(
+                format!("{} cleared (0)", metric.label()),
+                BannerLevel::Info,
+            );
+            return true;
+        }
+        match raw.parse::<f64>() {
+            Ok(v) if (0.0..=metric.max()).contains(&v) => {
+                self.set_metric_value(metric, v);
+                let shown = self.metric_value(metric);
+                self.cancel_edit();
+                self.set_banner(
+                    format!(
+                        "{} set to {} {} — press Apply to enforce",
+                        metric.label(),
+                        format_value(metric, shown),
+                        metric.unit()
+                    ),
+                    BannerLevel::Info,
+                );
+                true
+            }
+            Ok(v) if v < 0.0 => {
+                self.set_banner("Value must be ≥ 0", BannerLevel::Warn);
+                false
+            }
+            Ok(_) => {
+                self.set_banner(
+                    format!("Max for {} is {}", metric.label(), metric.max()),
+                    BannerLevel::Warn,
+                );
+                false
+            }
+            Err(_) => {
+                self.set_banner(format!("Not a number: {raw}"), BannerLevel::Warn);
+                false
+            }
+        }
+    }
+
+    fn on_key_edit(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Esc => {
+                self.cancel_edit();
+                self.set_banner("Edit cancelled", BannerLevel::Info);
+            }
+            KeyCode::Enter => {
+                let _ = self.commit_edit();
+            }
+            KeyCode::Backspace => {
+                self.edit_buf.pop();
+            }
+            KeyCode::Char(c) if c.is_ascii_digit() || c == '.' => {
+                if c == '.' && self.edit_buf.contains('.') {
+                    return;
+                }
+                if self.edit_buf.len() < 12 {
+                    self.edit_buf.push(c);
+                }
+            }
+            _ => {}
+        }
+    }
+
     fn apply_preset(&mut self, idx: usize) {
+        self.cancel_edit();
         let Some(preset) = self.presets.get(idx).cloned() else {
             self.set_banner(format!("No preset #{}", idx + 1), BannerLevel::Warn);
             return;
@@ -1045,6 +1168,9 @@ impl App {
     }
 
     fn do_apply(&mut self) -> bool {
+        if self.editing.is_some() && !self.commit_edit() {
+            return false;
+        }
         if !self.is_root {
             self.set_banner(
                 "Root required. Re-run with: sudo netlimit",
@@ -1089,6 +1215,7 @@ impl App {
     }
 
     fn do_reset(&mut self) {
+        self.cancel_edit();
         if !self.is_root {
             self.set_banner(
                 "Root required. Re-run with: sudo netlimit",
@@ -1141,8 +1268,9 @@ impl App {
     pub fn draft_differs_from_applied(&self) -> bool {
         let draft = self.draft_limits();
         let a = &self.applied;
-        let same_dl = (draft.download_mbps - a.download_mbps).abs() < 0.05;
-        let same_ul = (draft.upload_mbps - a.upload_mbps).abs() < 0.05;
+        // Tighter than 0.05 so 0.5 Mbps is distinct from nearby rates.
+        let same_dl = (draft.download_mbps - a.download_mbps).abs() < 0.005;
+        let same_ul = (draft.upload_mbps - a.upload_mbps).abs() < 0.005;
         let same_loss = (draft.loss_percent - a.loss_percent).abs() < 0.05;
         let same_delay = (draft.delay_ms - a.delay_ms).abs() < 0.05;
         let same_jitter = (draft.jitter_ms - a.jitter_ms).abs() < 0.05;
@@ -1152,6 +1280,7 @@ impl App {
     }
 
     fn open_history(&mut self) {
+        self.cancel_edit();
         self.speed_history = crate::history::load_history();
         self.screen = Screen::History;
     }

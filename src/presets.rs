@@ -86,10 +86,11 @@ impl Preset {
 }
 
 fn trim_num(v: f64) -> String {
-    if (v - v.round()).abs() < f64::EPSILON {
-        format!("{}", v as i64)
+    if (v - v.round()).abs() < 1e-6 {
+        format!("{}", v.round() as i64)
     } else {
-        format!("{v:.1}")
+        let s = format!("{v:.3}");
+        s.trim_end_matches('0').trim_end_matches('.').to_string()
     }
 }
 
@@ -180,18 +181,60 @@ pub fn slider_max(metric: crate::tc::Metric) -> f64 {
     }
 }
 
+/// Left portion of a rate slider, reserved for sub-megabit values (0.5 Mbps etc.).
+const RATE_LOW_FRAC: f64 = 0.30;
+const RATE_LOW_END: f64 = 2.0;
+
 pub fn value_to_slider_ratio(metric: crate::tc::Metric, value: f64) -> f64 {
-    let max = slider_max(metric);
-    (value / max).clamp(0.0, 1.0)
+    match metric {
+        crate::tc::Metric::Download | crate::tc::Metric::Upload => {
+            let max = slider_max(metric);
+            if value <= RATE_LOW_END {
+                (value / RATE_LOW_END) * RATE_LOW_FRAC
+            } else {
+                let t = ((value - RATE_LOW_END) / (max - RATE_LOW_END)).clamp(0.0, 1.0);
+                RATE_LOW_FRAC + t * (1.0 - RATE_LOW_FRAC)
+            }
+        }
+        _ => {
+            let max = slider_max(metric);
+            (value / max).clamp(0.0, 1.0)
+        }
+    }
 }
 
 pub fn slider_ratio_to_value(metric: crate::tc::Metric, ratio: f64) -> f64 {
     let ratio = ratio.clamp(0.0, 1.0);
-    let max = slider_max(metric);
-    let raw = ratio * max;
     match metric {
-        crate::tc::Metric::Loss => (raw * 2.0).round() / 2.0,
-        crate::tc::Metric::Delay | crate::tc::Metric::Jitter => raw.round(),
-        crate::tc::Metric::Download | crate::tc::Metric::Upload => raw.round(),
+        crate::tc::Metric::Download | crate::tc::Metric::Upload => {
+            let max = slider_max(metric);
+            if ratio <= RATE_LOW_FRAC {
+                let raw = (ratio / RATE_LOW_FRAC) * RATE_LOW_END;
+                (raw * 10.0).round() / 10.0
+            } else {
+                let t = (ratio - RATE_LOW_FRAC) / (1.0 - RATE_LOW_FRAC);
+                (RATE_LOW_END + t * (max - RATE_LOW_END)).round()
+            }
+        }
+        crate::tc::Metric::Loss => {
+            let raw = ratio * slider_max(metric);
+            (raw * 2.0).round() / 2.0
+        }
+        crate::tc::Metric::Delay | crate::tc::Metric::Jitter => {
+            (ratio * slider_max(metric)).round()
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tc::Metric;
+
+    #[test]
+    fn slider_reaches_half_megabit() {
+        let ratio = value_to_slider_ratio(Metric::Download, 0.5);
+        let back = slider_ratio_to_value(Metric::Download, ratio);
+        assert!((back - 0.5).abs() < 1e-9, "got {back} from ratio {ratio}");
     }
 }

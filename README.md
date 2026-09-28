@@ -21,7 +21,7 @@ Shape **download**, **upload**, **packet loss**, **delay**, and **jitter** using
 ## Features
 
 - Dark TUI inspired by btop
-- Rate limits (Mbps), packet loss (%), delay & jitter (ms)
+- Rate limits (Mbps, including fractions such as 0.5), packet loss (%), delay & jitter (ms)
 - Interface picker (list + default route marker)
 - Presets: **No limits**, **4G**, **3G**, **Starlink** (+ custom save/delete)
 - Path quality: live packet-loss and RTT graphs (ICMP to `1.1.1.1`)
@@ -162,6 +162,7 @@ netlimit --help
 
 # Shape traffic (needs root; re-execs with sudo unless --no-sudo)
 sudo netlimit apply --download 10 --upload 2 --loss 1 --delay 50 --jitter 10
+sudo netlimit apply --download 0.5 --upload 0.5
 sudo netlimit apply --preset 4G -i wlan0
 sudo netlimit reset
 
@@ -197,7 +198,8 @@ Global flags: `-i` / `--interface`, `--no-sudo`, `--json`.
 | Key | Action |
 |-----|--------|
 | `↑` `↓` / `Tab` | Select metric |
-| `←` `→` / `+` `−` | Adjust value |
+| `←` `→` / `+` `−` | Adjust (0.1 Mbps while under 1, else 1) |
+| `e` / `Enter` | Type a value (e.g. `0.5` Mbps) |
 | `Shift` + adjust | Coarse step |
 | `1`–`9` | Load preset |
 | `s` | Save custom preset |

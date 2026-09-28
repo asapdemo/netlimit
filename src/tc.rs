@@ -286,7 +286,8 @@ impl TrafficController {
             "default",
             "10",
         ])?;
-        run(&[
+        let low = htb_low_rate_tokens(rate_mbps);
+        let mut class: Vec<&str> = vec![
             "tc",
             "class",
             "add",
@@ -301,7 +302,10 @@ impl TrafficController {
             &rate,
             "ceil",
             &rate,
-        ])?;
+        ];
+        let low_refs: Vec<&str> = low.iter().map(|s| s.as_str()).collect();
+        class.extend(low_refs);
+        run(&class)?;
         let owned = netem_owned_args(loss, delay_ms, jitter_ms);
         let mut args: Vec<&str> = vec![
             "tc",
@@ -481,42 +485,59 @@ fn parse_loss(device: &str) -> Option<f64> {
 fn mbps_to_tc(mbps: f64) -> String {
     if mbps >= 1000.0 {
         let g = mbps / 1000.0;
-        if (g - g.round()).abs() < f64::EPSILON {
-            format!("{}Gbit", g as i64)
+        if (g - g.round()).abs() < 1e-6 {
+            format!("{}Gbit", g.round() as i64)
         } else {
             format!("{g:.3}Gbit")
         }
-    } else if (mbps - mbps.round()).abs() < f64::EPSILON {
-        format!("{}Mbit", mbps as i64)
-    } else {
+    } else if mbps >= 1.0 && (mbps - mbps.round()).abs() < 1e-6 {
+        format!("{}Mbit", mbps.round() as i64)
+    } else if mbps >= 1.0 {
         format!("{mbps:.3}Mbit")
+    } else {
+        // 0.5 Mbps → 500kbit. Integer kbit is accepted by tc and comes back
+        // from `tc class show` as 500Kbit, so status round-trips exactly.
+        let kbit = (mbps * 1000.0).round() as i64;
+        format!("{}kbit", kbit.max(1))
+    }
+}
+
+/// Extra HTB class tokens so a very low rate can still send one MTU.
+///
+/// Default r2q=10 makes quantum = bytes/sec / 10. Below one ethernet frame
+/// the kernel warns and a single packet may never be dequeued.
+fn htb_low_rate_tokens(rate_mbps: f64) -> Vec<String> {
+    let bytes_per_sec = rate_mbps * 1_000_000.0 / 8.0;
+    if bytes_per_sec / 10.0 < 1500.0 {
+        vec![
+            "quantum".into(),
+            "1500".into(),
+            "burst".into(),
+            "1600b".into(),
+        ]
+    } else {
+        Vec::new()
     }
 }
 
 fn tc_rate_to_mbps(s: &str) -> Option<f64> {
-    let s = s.trim();
-    let (num, unit) = if let Some(n) = s.strip_suffix("Tbit") {
-        (n, "tbit")
-    } else if let Some(n) = s.strip_suffix("Gbit") {
-        (n, "gbit")
-    } else if let Some(n) = s.strip_suffix("Mbit") {
-        (n, "mbit")
-    } else if let Some(n) = s.strip_suffix("Kbit") {
-        (n, "kbit")
+    let s = s.trim().to_ascii_lowercase();
+    // Longer suffixes first so "kbit" is not parsed as "bit".
+    let (num, mult) = if let Some(n) = s.strip_suffix("tbit") {
+        (n, 1_000_000.0)
+    } else if let Some(n) = s.strip_suffix("gbit") {
+        (n, 1000.0)
+    } else if let Some(n) = s.strip_suffix("mbit") {
+        (n, 1.0)
+    } else if let Some(n) = s.strip_suffix("kbit") {
+        (n, 0.001)
     } else if let Some(n) = s.strip_suffix("bit") {
-        (n, "bit")
+        (n, 1.0 / 1_000_000.0)
     } else {
         return None;
     };
     let v: f64 = num.parse().ok()?;
-    Some(match unit {
-        "bit" => v / 1_000_000.0,
-        "kbit" => v / 1000.0,
-        "mbit" => v,
-        "gbit" => v * 1000.0,
-        "tbit" => v * 1_000_000.0,
-        _ => v,
-    })
+    Some(v * mult)
 }
 
 fn fmt_loss(p: f64) -> String {
@@ -582,13 +603,24 @@ fn parse_delay(device: &str) -> Option<(f64, f64)> {
     None
 }
 
+/// Compact number: `10`, `0.5`, `0.25` (up to 1 kbit / 0.001 Mbps).
+pub fn format_number(v: f64) -> String {
+    if !v.is_finite() {
+        return "0".into();
+    }
+    if (v - v.round()).abs() < 1e-6 {
+        format!("{}", v.round() as i64)
+    } else {
+        let s = format!("{v:.3}");
+        s.trim_end_matches('0').trim_end_matches('.').to_string()
+    }
+}
+
 pub fn format_rate(mbps: f64) -> String {
     if mbps <= 0.0 {
         "Unlimited".into()
-    } else if (mbps - mbps.round()).abs() < f64::EPSILON {
-        format!("{} Mbps", mbps as i64)
     } else {
-        format!("{mbps:.1} Mbps")
+        format!("{} Mbps", format_number(mbps))
     }
 }
 
@@ -617,10 +649,8 @@ pub fn format_value(metric: Metric, value: f64) -> String {
         Metric::Download | Metric::Upload => {
             if value <= 0.0 {
                 "∞".into()
-            } else if (value - value.round()).abs() < f64::EPSILON {
-                format!("{}", value as i64)
             } else {
-                format!("{value:.1}")
+                format_number(value)
             }
         }
         Metric::Loss | Metric::Delay | Metric::Jitter => {
@@ -681,10 +711,28 @@ impl Metric {
 
     pub fn unit_hint(self) -> &'static str {
         match self {
-            Metric::Download | Metric::Upload => "Mbps · 0 = ∞",
+            Metric::Download | Metric::Upload => "Mbps · 0=∞ · e type",
             Metric::Loss => "% packet loss",
             Metric::Delay => "ms base latency",
             Metric::Jitter => "ms variation",
+        }
+    }
+
+    /// Step used by − / +. Rates use 0.1 Mbps below 1 so values like 0.5 are reachable.
+    pub fn step(self, current: f64, direction: i32, coarse: bool) -> f64 {
+        if matches!(self, Metric::Download | Metric::Upload) && !coarse {
+            // 0 stays a 1 Mbps jump so unlimited → 1 is one press.
+            // Once under 1 Mbps (or stepping down from 1), use 0.1 so 0.5 is reachable.
+            let in_fraction = current > 1e-9 && current < 1.0 - 1e-9;
+            let leaving_one = direction < 0 && current <= 1.0 + 1e-9 && current > 1e-9;
+            if in_fraction || leaving_one {
+                return 0.1;
+            }
+        }
+        if coarse {
+            self.large_step()
+        } else {
+            self.small_step()
         }
     }
 
@@ -738,17 +786,43 @@ mod tests {
     fn rate_roundtrip_basic() {
         assert_eq!(mbps_to_tc(10.0), "10Mbit");
         assert_eq!(mbps_to_tc(2.5), "2.500Mbit");
+        assert_eq!(mbps_to_tc(0.5), "500kbit");
+        assert_eq!(mbps_to_tc(0.1), "100kbit");
         assert_eq!(tc_rate_to_mbps("10Mbit"), Some(10.0));
         assert_eq!(tc_rate_to_mbps("1Gbit"), Some(1000.0));
+        assert_eq!(tc_rate_to_mbps("500Kbit"), Some(0.5));
+        assert_eq!(tc_rate_to_mbps("500kbit"), Some(0.5));
+        assert_eq!(tc_rate_to_mbps("100Kbit"), Some(0.1));
+    }
+
+    #[test]
+    fn low_rate_htb_tokens() {
+        assert!(htb_low_rate_tokens(0.5).is_empty());
+        assert!(htb_low_rate_tokens(0.05)
+            .iter()
+            .any(|s| s == "quantum"));
     }
 
     #[test]
     fn format_helpers() {
         assert_eq!(format_rate(0.0), "Unlimited");
         assert_eq!(format_rate(10.0), "10 Mbps");
+        assert_eq!(format_rate(0.5), "0.5 Mbps");
         assert_eq!(format_loss(0.0), "0%");
         assert_eq!(format_loss(3.5), "3.5%");
         assert_eq!(format_value(Metric::Download, 0.0), "∞");
+        assert_eq!(format_value(Metric::Download, 0.5), "0.5");
+        assert_eq!(format_value(Metric::Upload, 0.25), "0.25");
+    }
+
+    #[test]
+    fn fractional_rate_step() {
+        assert_eq!(Metric::Download.step(0.0, 1, false), 1.0);
+        assert_eq!(Metric::Download.step(0.5, 1, false), 0.1);
+        assert_eq!(Metric::Download.step(1.0, -1, false), 0.1);
+        assert_eq!(Metric::Download.step(1.0, 1, false), 1.0);
+        assert_eq!(Metric::Download.step(10.0, 1, false), 1.0);
+        assert_eq!(Metric::Download.step(0.5, 1, true), 10.0);
     }
 
     #[test]
@@ -756,7 +830,7 @@ mod tests {
         assert_eq!(Metric::Download.label(), "Download");
         assert_eq!(Metric::Download.icon(), "↓");
         assert_eq!(Metric::Download.unit(), "Mbps");
-        assert_eq!(Metric::Download.unit_hint(), "Mbps · 0 = ∞");
+        assert_eq!(Metric::Download.unit_hint(), "Mbps · 0=∞ · e type");
         assert_eq!(Metric::Loss.label(), "Loss");
         assert_eq!(Metric::Loss.unit(), "%");
         assert_eq!(Metric::Delay.unit_hint(), "ms base latency");

@@ -23,6 +23,7 @@ With no subcommand, opens the interactive TUI.\n\n\
 Examples:\n  \
   sudo netlimit\n  \
   sudo netlimit apply --download 10 --upload 2 --loss 1\n  \
+  sudo netlimit apply --download 0.5 --upload 0.5\n  \
   sudo netlimit apply --preset 4G\n  \
   sudo netlimit reset\n  \
   netlimit status\n  \
@@ -53,11 +54,11 @@ pub enum Commands {
 
     /// Apply traffic limits (requires root)
     Apply {
-        /// Download limit in Mbps (0 = unlimited)
+        /// Download limit in Mbps (0 = unlimited; fractions allowed, e.g. 0.5)
         #[arg(long, short = 'd', value_name = "MBPS")]
         download: Option<f64>,
 
-        /// Upload limit in Mbps (0 = unlimited)
+        /// Upload limit in Mbps (0 = unlimited; fractions allowed, e.g. 0.5)
         #[arg(long, short = 'u', value_name = "MBPS")]
         upload: Option<f64>,
 
