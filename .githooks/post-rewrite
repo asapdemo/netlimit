@@ -1,0 +1,4 @@
+#!/bin/sh
+[ -t 0 ] || cat >/dev/null
+root=$(git rev-parse --show-toplevel 2>/dev/null) || exit 0
+sh "$root/scripts/graphify-rebuild.sh" rewrite "$@" || exit 0
