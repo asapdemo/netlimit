@@ -106,8 +106,8 @@ pub fn start(duration_secs: u32, scope: TestScope) -> (Receiver<SpeedTestEvent>,
     let (tx, rx) = mpsc::channel();
     let cancel = Arc::new(AtomicBool::new(false));
     let cancel_worker = Arc::clone(&cancel);
-    thread::spawn(move || {
-        match run_test(&tx, duration_secs, scope, &cancel_worker) {
+    thread::spawn(
+        move || match run_test(&tx, duration_secs, scope, &cancel_worker) {
             Ok(()) => {}
             Err(RunError::Cancelled) => {
                 let _ = tx.send(SpeedTestEvent::Cancelled);
@@ -115,8 +115,8 @@ pub fn start(duration_secs: u32, scope: TestScope) -> (Receiver<SpeedTestEvent>,
             Err(RunError::Failed(e)) => {
                 let _ = tx.send(SpeedTestEvent::Failed(e));
             }
-        }
-    });
+        },
+    );
     (rx, cancel)
 }
 

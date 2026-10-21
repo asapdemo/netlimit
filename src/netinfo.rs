@@ -32,10 +32,7 @@ pub fn list_interfaces() -> Vec<String> {
         let b_def = Some(b.as_str()) == default.as_deref();
         let a_up = interface_state(a) == "up";
         let b_up = interface_state(b) == "up";
-        b_def
-            .cmp(&a_def)
-            .then(b_up.cmp(&a_up))
-            .then(a.cmp(b))
+        b_def.cmp(&a_def).then(b_up.cmp(&a_up)).then(a.cmp(b))
     });
 
     names

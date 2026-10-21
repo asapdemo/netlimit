@@ -21,7 +21,7 @@ Shape **download**, **upload**, **packet loss**, **delay**, and **jitter** using
 ## Features
 
 - Dark TUI inspired by btop
-- Rate limits (Mbps, including fractions such as 0.5), packet loss (%), delay & jitter (ms)
+- Rate limits (Mbps, including 0.5, 0.25, and 0.1), packet loss (%), delay & jitter (ms)
 - Interface picker (list + default route marker)
 - Presets: **No limits**, **4G**, **3G**, **Starlink** (+ custom save/delete)
 - Path quality: live packet-loss and RTT graphs (ICMP to `1.1.1.1`)
@@ -198,7 +198,7 @@ Global flags: `-i` / `--interface`, `--no-sudo`, `--json`.
 | Key | Action |
 |-----|--------|
 | `↑` `↓` / `Tab` | Select metric |
-| `←` `→` / `+` `−` | Adjust (0.1 Mbps while under 1, else 1) |
+| `←` `→` / `+` `−` | Adjust (below 1 Mbps: 0.5, then 0.25, then 0.1; otherwise 1) |
 | `e` / `Enter` | Type a value (e.g. `0.5` Mbps) |
 | `Shift` + adjust | Coarse step |
 | `1`–`9` | Load preset |

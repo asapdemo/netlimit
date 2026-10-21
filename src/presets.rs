@@ -181,16 +181,62 @@ pub fn slider_max(metric: crate::tc::Metric) -> f64 {
     }
 }
 
-/// Left portion of a rate slider, reserved for sub-megabit values (0.5 Mbps etc.).
+/// Left portion of a rate slider. Its first half is 0..=1 Mbps and snaps to
+/// 0, 0.1, 0.25, 0.5, and 1 so each slow rate has its own slice. The rest of
+/// this span is 1..=2 Mbps in 0.1 steps.
 const RATE_LOW_FRAC: f64 = 0.30;
 const RATE_LOW_END: f64 = 2.0;
+
+fn rate_one_frac() -> f64 {
+    RATE_LOW_FRAC * (1.0 / RATE_LOW_END)
+}
+
+/// `0` plus [`crate::tc::SLOW_RATE_STOPS`], which ends at 1 Mbps.
+fn slow_slider_stops() -> [f64; 5] {
+    let s = crate::tc::SLOW_RATE_STOPS;
+    [0.0, s[0], s[1], s[2], s[3]]
+}
+
+fn slow_value_to_ratio(value: f64) -> f64 {
+    let stops = slow_slider_stops();
+    let one = rate_one_frac();
+    let n = (stops.len() - 1) as f64;
+    if value <= 0.0 {
+        return 0.0;
+    }
+    if value >= 1.0 {
+        return one;
+    }
+    let mut i = 0;
+    while i + 1 < stops.len() - 1 && value >= stops[i + 1] {
+        i += 1;
+    }
+    let a = stops[i];
+    let b = stops[i + 1];
+    let u = ((value - a) / (b - a)).clamp(0.0, 1.0);
+    let r0 = one * (i as f64) / n;
+    let r1 = one * ((i + 1) as f64) / n;
+    r0 + u * (r1 - r0)
+}
+
+fn slow_ratio_to_value(ratio: f64) -> f64 {
+    let stops = slow_slider_stops();
+    let one = rate_one_frac();
+    let n = (stops.len() - 1) as f64;
+    let t = (ratio / one).clamp(0.0, 1.0);
+    let idx = (t * n).round() as usize;
+    stops[idx.min(stops.len() - 1)]
+}
 
 pub fn value_to_slider_ratio(metric: crate::tc::Metric, value: f64) -> f64 {
     match metric {
         crate::tc::Metric::Download | crate::tc::Metric::Upload => {
             let max = slider_max(metric);
-            if value <= RATE_LOW_END {
-                (value / RATE_LOW_END) * RATE_LOW_FRAC
+            if value <= 1.0 {
+                slow_value_to_ratio(value)
+            } else if value <= RATE_LOW_END {
+                let t = ((value - 1.0) / (RATE_LOW_END - 1.0)).clamp(0.0, 1.0);
+                rate_one_frac() + t * (RATE_LOW_FRAC - rate_one_frac())
             } else {
                 let t = ((value - RATE_LOW_END) / (max - RATE_LOW_END)).clamp(0.0, 1.0);
                 RATE_LOW_FRAC + t * (1.0 - RATE_LOW_FRAC)
@@ -208,8 +254,11 @@ pub fn slider_ratio_to_value(metric: crate::tc::Metric, ratio: f64) -> f64 {
     match metric {
         crate::tc::Metric::Download | crate::tc::Metric::Upload => {
             let max = slider_max(metric);
-            if ratio <= RATE_LOW_FRAC {
-                let raw = (ratio / RATE_LOW_FRAC) * RATE_LOW_END;
+            if ratio <= rate_one_frac() {
+                slow_ratio_to_value(ratio)
+            } else if ratio <= RATE_LOW_FRAC {
+                let t = (ratio - rate_one_frac()) / (RATE_LOW_FRAC - rate_one_frac());
+                let raw = 1.0 + t * (RATE_LOW_END - 1.0);
                 (raw * 10.0).round() / 10.0
             } else {
                 let t = (ratio - RATE_LOW_FRAC) / (1.0 - RATE_LOW_FRAC);
@@ -232,9 +281,20 @@ mod tests {
     use crate::tc::Metric;
 
     #[test]
-    fn slider_reaches_half_megabit() {
-        let ratio = value_to_slider_ratio(Metric::Download, 0.5);
-        let back = slider_ratio_to_value(Metric::Download, ratio);
-        assert!((back - 0.5).abs() < 1e-9, "got {back} from ratio {ratio}");
+    fn slider_reaches_slow_rates() {
+        for rate in [0.0, 0.1, 0.25, 0.5, 1.0, 1.5, 10.0] {
+            let ratio = value_to_slider_ratio(Metric::Download, rate);
+            let back = slider_ratio_to_value(Metric::Download, ratio);
+            assert!(
+                (back - rate).abs() < 1e-9,
+                "{rate} -> ratio {ratio} -> {back}"
+            );
+        }
+        let quarter = value_to_slider_ratio(Metric::Upload, 0.25);
+        let nudged = slider_ratio_to_value(Metric::Upload, quarter + 0.005);
+        assert!(
+            (nudged - 0.25).abs() < 1e-9,
+            "0.25 slider slice collapsed to {nudged}"
+        );
     }
 }
