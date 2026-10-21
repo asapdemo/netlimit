@@ -7,8 +7,8 @@ use ratatui::widgets::{Block, Borders, Clear, Gauge, Paragraph, Sparkline, Wrap}
 use ratatui::Frame;
 
 use crate::app::{App, BannerLevel, MetricHits, PresetHits, Screen};
-use crate::tc::{format_loss, format_ms, format_rate};
 use crate::presets::{slider_max, value_to_slider_ratio};
+use crate::tc::{format_loss, format_ms, format_rate};
 use crate::tc::{format_value, Metric};
 use crate::theme;
 
@@ -27,13 +27,13 @@ fn draw_main(frame: &mut Frame, area: Rect, app: &mut App) {
     let root = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(6),  // top: interfaces (left 50%) + applied (right 50%)
-            Constraint::Length(5),  // presets
-            Constraint::Length(5),  // metrics
-            Constraint::Min(10),    // path quality (taller)
-            Constraint::Length(3),  // actions
-            Constraint::Length(2),  // banner
-            Constraint::Length(1),  // keys
+            Constraint::Length(6), // top: interfaces (left 50%) + applied (right 50%)
+            Constraint::Length(5), // presets
+            Constraint::Length(5), // metrics
+            Constraint::Min(10),   // path quality (taller)
+            Constraint::Length(3), // actions
+            Constraint::Length(2), // banner
+            Constraint::Length(1), // keys
         ])
         .split(area);
 
@@ -169,10 +169,7 @@ fn draw_interface(frame: &mut Frame, area: Rect, app: &mut App) {
 
         // Fill rest of row with background
         let line = Line::from(spans);
-        frame.render_widget(
-            Paragraph::new(line).style(Style::default().bg(bg)),
-            row,
-        );
+        frame.render_widget(Paragraph::new(line).style(Style::default().bg(bg)), row);
     }
 
     // Scroll indicators when list is longer than panel
@@ -291,7 +288,11 @@ fn draw_presets(frame: &mut Frame, area: Rect, app: &mut App) {
                 "×",
                 theme::ERROR,
                 theme::BG,
-                if selected { theme::ERROR } else { theme::BORDER },
+                if selected {
+                    theme::ERROR
+                } else {
+                    theme::BORDER
+                },
             );
             x = x.saturating_add(load_w + 3 + 1);
             Some(del_rect)
@@ -389,11 +390,7 @@ fn draw_metric_card(
         ))
         .title_bottom(Span::styled(
             format!(" {hint} "),
-            Style::default().fg(if editing {
-                accent
-            } else {
-                theme::TEXT_MUTED
-            }),
+            Style::default().fg(if editing { accent } else { theme::TEXT_MUTED }),
         ));
 
     let inner = block.inner(area);
@@ -415,7 +412,11 @@ fn draw_metric_card(
     let body = if has_slider {
         Layout::default()
             .direction(Direction::Vertical)
-            .constraints([Constraint::Length(1), Constraint::Length(1), Constraint::Min(0)])
+            .constraints([
+                Constraint::Length(1),
+                Constraint::Length(1),
+                Constraint::Min(0),
+            ])
             .split(inner)
     } else {
         Layout::default()
@@ -442,33 +443,29 @@ fn draw_metric_card(
     hits.inc = value_row[2];
 
     frame.render_widget(
-        Paragraph::new("−")
-            .alignment(Alignment::Center)
-            .style(
-                Style::default()
-                    .fg(if selected {
-                        theme::TEXT_INVERSE
-                    } else {
-                        accent
-                    })
-                    .bg(if selected { accent } else { theme::BTN_STEP_BG })
-                    .add_modifier(Modifier::BOLD),
-            ),
+        Paragraph::new("−").alignment(Alignment::Center).style(
+            Style::default()
+                .fg(if selected {
+                    theme::TEXT_INVERSE
+                } else {
+                    accent
+                })
+                .bg(if selected { accent } else { theme::BTN_STEP_BG })
+                .add_modifier(Modifier::BOLD),
+        ),
         value_row[0],
     );
     frame.render_widget(
-        Paragraph::new("+")
-            .alignment(Alignment::Center)
-            .style(
-                Style::default()
-                    .fg(if selected {
-                        theme::TEXT_INVERSE
-                    } else {
-                        accent
-                    })
-                    .bg(if selected { accent } else { theme::BTN_STEP_BG })
-                    .add_modifier(Modifier::BOLD),
-            ),
+        Paragraph::new("+").alignment(Alignment::Center).style(
+            Style::default()
+                .fg(if selected {
+                    theme::TEXT_INVERSE
+                } else {
+                    accent
+                })
+                .bg(if selected { accent } else { theme::BTN_STEP_BG })
+                .add_modifier(Modifier::BOLD),
+        ),
         value_row[2],
     );
 
@@ -482,18 +479,12 @@ fn draw_metric_card(
         format_value(metric, app.metric_value(metric))
     };
     frame.render_widget(
-        Paragraph::new(value)
-            .alignment(Alignment::Center)
-            .style(
-                Style::default()
-                    .fg(if editing {
-                        theme::TEXT_INVERSE
-                    } else {
-                        accent
-                    })
-                    .bg(if editing { accent } else { bg })
-                    .add_modifier(Modifier::BOLD),
-            ),
+        Paragraph::new(value).alignment(Alignment::Center).style(
+            Style::default()
+                .fg(if editing { theme::TEXT_INVERSE } else { accent })
+                .bg(if editing { accent } else { bg })
+                .add_modifier(Modifier::BOLD),
+        ),
         value_row[1],
     );
 
@@ -538,11 +529,7 @@ fn draw_slider(
 
     // Track + filled portion via Gauge, then overlay a thumb character.
     let track_bg = Color::Rgb(30, 35, 42);
-    let fill = if over {
-        theme::WARN
-    } else {
-        accent
-    };
+    let fill = if over { theme::WARN } else { accent };
     let gauge = Gauge::default()
         .gauge_style(Style::default().fg(fill).bg(track_bg))
         .ratio(ratio)
@@ -585,7 +572,11 @@ enum BtnStyle {
     /// Neutral grey — Quit / Back
     Ghost,
     /// Preset chips / small toggles
-    Chip { fg: Color, active: bool, danger: bool },
+    Chip {
+        fg: Color,
+        active: bool,
+        danger: bool,
+    },
 }
 
 fn render_btn(frame: &mut Frame, area: Rect, label: &str, style: BtnStyle) {
@@ -631,14 +622,13 @@ fn render_btn(frame: &mut Frame, area: Rect, label: &str, style: BtnStyle) {
 
     let block = Block::default()
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(border).add_modifier(if matches!(
-            style,
-            BtnStyle::Primary | BtnStyle::Accent
-        ) {
-            Modifier::BOLD
-        } else {
-            Modifier::empty()
-        }))
+        .border_style(Style::default().fg(border).add_modifier(
+            if matches!(style, BtnStyle::Primary | BtnStyle::Accent) {
+                Modifier::BOLD
+            } else {
+                Modifier::empty()
+            },
+        ))
         .style(Style::default().bg(bg));
     let inner = block.inner(area);
     frame.render_widget(block, area);
@@ -762,10 +752,7 @@ fn draw_applied(frame: &mut Frame, area: Rect, app: &App) {
                     .fg(theme::SUCCESS)
                     .add_modifier(Modifier::BOLD),
             ),
-            Span::styled(
-                format!("on {iface}"),
-                Style::default().fg(theme::TEXT),
-            ),
+            Span::styled(format!("on {iface}"), Style::default().fg(theme::TEXT)),
         ])
     } else {
         Line::from(vec![
@@ -815,7 +802,9 @@ fn draw_applied(frame: &mut Frame, area: Rect, app: &App) {
                 Span::styled(" ⚠ Loss  ", Style::default().fg(theme::TEXT_MUTED)),
                 Span::styled(
                     format!("{:<8}", format_loss(app.applied.loss_percent)),
-                    Style::default().fg(theme::LOSS).add_modifier(Modifier::BOLD),
+                    Style::default()
+                        .fg(theme::LOSS)
+                        .add_modifier(Modifier::BOLD),
                 ),
                 Span::styled(" ⏱ Delay  ", Style::default().fg(theme::TEXT_MUTED)),
                 Span::styled(
@@ -827,7 +816,9 @@ fn draw_applied(frame: &mut Frame, area: Rect, app: &App) {
                 Span::styled(" ∿ Jitter  ", Style::default().fg(theme::TEXT_MUTED)),
                 Span::styled(
                     format!("{}ms", format_ms(app.applied.jitter_ms)),
-                    Style::default().fg(theme::WARN).add_modifier(Modifier::BOLD),
+                    Style::default()
+                        .fg(theme::WARN)
+                        .add_modifier(Modifier::BOLD),
                 ),
             ]))
             .style(Style::default().bg(theme::SURFACE)),
@@ -1016,9 +1007,7 @@ fn draw_quality_graph(
         Paragraph::new(Line::from(vec![
             Span::styled(
                 format!(" {big_value}  "),
-                Style::default()
-                    .fg(color)
-                    .add_modifier(Modifier::BOLD),
+                Style::default().fg(color).add_modifier(Modifier::BOLD),
             ),
             Span::styled(status, Style::default().fg(theme::TEXT_MUTED)),
         ]))
@@ -1026,7 +1015,11 @@ fn draw_quality_graph(
         rows[0],
     );
 
-    let spark_data: Vec<u64> = if data.is_empty() { vec![0] } else { data.to_vec() };
+    let spark_data: Vec<u64> = if data.is_empty() {
+        vec![0]
+    } else {
+        data.to_vec()
+    };
     let max = if fixed_max {
         max.max(1)
     } else {
@@ -1098,8 +1091,7 @@ fn draw_speedtest_screen(frame: &mut Frame, area: Rect, app: &mut App) {
         .split(rows[0]);
 
     frame.render_widget(
-        Paragraph::new(" Sec/phase")
-            .style(Style::default().fg(theme::TEXT_DIM).bg(theme::SURFACE)),
+        Paragraph::new(" Sec/phase").style(Style::default().fg(theme::TEXT_DIM).bg(theme::SURFACE)),
         ctrl[0],
     );
     app.hit_st_dur_dec = ctrl[1];
@@ -1170,7 +1162,10 @@ fn draw_speedtest_screen(frame: &mut Frame, area: Rect, app: &mut App) {
     } else if app.last_speedtest.is_some() {
         " complete — Run all or ↺ under a graph ".into()
     } else {
-        format!(" each phase runs {d}s (latency + download + upload ≈ {}s) ", d * 3)
+        format!(
+            " each phase runs {d}s (latency + download + upload ≈ {}s) ",
+            d * 3
+        )
     };
     frame.render_widget(
         Paragraph::new(phase).style(
@@ -1522,14 +1517,9 @@ fn draw_st_graph(
         Paragraph::new(Line::from(vec![
             Span::styled(
                 format!(" {value_txt}"),
-                Style::default()
-                    .fg(color)
-                    .add_modifier(Modifier::BOLD),
+                Style::default().fg(color).add_modifier(Modifier::BOLD),
             ),
-            Span::styled(
-                format!(" {unit}"),
-                Style::default().fg(theme::TEXT_MUTED),
-            ),
+            Span::styled(format!(" {unit}"), Style::default().fg(theme::TEXT_MUTED)),
         ]))
         .alignment(Alignment::Center)
         .style(Style::default().bg(theme::BG)),
@@ -1636,7 +1626,7 @@ fn draw_keys_main(frame: &mut Frame, area: Rect, app: &App) {
         Line::from(vec![
             dim("typing  "),
             key("0-9"),
-            dim(" .  "),
+            dim(" . ,  "),
             key("Enter"),
             dim(" set  "),
             key("Esc"),
@@ -1691,7 +1681,11 @@ fn draw_history_screen(frame: &mut Frame, area: Rect, app: &App) {
         "  When                 ↓ Mbps   ↑ Mbps   Lat    Iface / limits",
         Style::default().fg(theme::TEXT_DIM),
     ))];
-    for e in app.speed_history.iter().take(inner.height.saturating_sub(2) as usize) {
+    for e in app
+        .speed_history
+        .iter()
+        .take(inner.height.saturating_sub(2) as usize)
+    {
         let lim = if e.limits.is_active() {
             format!("  [{}]", e.limits.summary())
         } else {

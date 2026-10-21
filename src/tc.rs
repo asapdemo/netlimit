@@ -274,50 +274,19 @@ impl TrafficController {
     ) -> Result<(), TcError> {
         let rate = mbps_to_tc(rate_mbps);
         run(&[
-            "tc",
-            "qdisc",
-            "add",
-            "dev",
-            device,
-            "root",
-            "handle",
-            "1:",
-            "htb",
-            "default",
-            "10",
+            "tc", "qdisc", "add", "dev", device, "root", "handle", "1:", "htb", "default", "10",
         ])?;
         let low = htb_low_rate_tokens(rate_mbps);
         let mut class: Vec<&str> = vec![
-            "tc",
-            "class",
-            "add",
-            "dev",
-            device,
-            "parent",
-            "1:",
-            "classid",
-            "1:10",
-            "htb",
-            "rate",
-            &rate,
-            "ceil",
-            &rate,
+            "tc", "class", "add", "dev", device, "parent", "1:", "classid", "1:10", "htb", "rate",
+            &rate, "ceil", &rate,
         ];
         let low_refs: Vec<&str> = low.iter().map(|s| s.as_str()).collect();
         class.extend(low_refs);
         run(&class)?;
         let owned = netem_owned_args(loss, delay_ms, jitter_ms);
         let mut args: Vec<&str> = vec![
-            "tc",
-            "qdisc",
-            "add",
-            "dev",
-            device,
-            "parent",
-            "1:10",
-            "handle",
-            "10:",
-            "netem",
+            "tc", "qdisc", "add", "dev", device, "parent", "1:10", "handle", "10:", "netem",
         ];
         let extras: Vec<&str> = owned.iter().map(|s| s.as_str()).collect();
         args.extend(extras);
@@ -336,8 +305,9 @@ impl TrafficController {
             return Ok(());
         }
         let owned = netem_owned_args(loss, delay_ms, jitter_ms);
-        let mut args: Vec<&str> =
-            vec!["tc", "qdisc", "add", "dev", device, "root", "handle", "10:", "netem"];
+        let mut args: Vec<&str> = vec![
+            "tc", "qdisc", "add", "dev", device, "root", "handle", "10:", "netem",
+        ];
         let extras: Vec<&str> = owned.iter().map(|s| s.as_str()).collect();
         args.extend(extras);
         run(&args)?;
@@ -603,6 +573,15 @@ fn parse_delay(device: &str) -> Option<(f64, f64)> {
     None
 }
 
+/// Download/upload stops for − / + at or below 1 Mbps, slowest first.
+/// `1` is the top of the ladder; the next press down from `0.1` clears the limit.
+pub const SLOW_RATE_STOPS: [f64; 4] = [0.1, 0.25, 0.5, 1.0];
+
+/// Parse a typed number. A comma is a decimal separator (`0,25` → 0.25).
+pub fn parse_user_number(raw: &str) -> Result<f64, std::num::ParseFloatError> {
+    raw.trim().replace(',', ".").parse()
+}
+
 /// Compact number: `10`, `0.5`, `0.25` (up to 1 kbit / 0.001 Mbps).
 pub fn format_number(v: f64) -> String {
     if !v.is_finite() {
@@ -718,15 +697,15 @@ impl Metric {
         }
     }
 
-    /// Step used by − / +. Rates use 0.1 Mbps below 1 so values like 0.5 are reachable.
+    /// Step used by − / +.
+    ///
+    /// At 1 Mbps and above the step is 1 (10 with Shift). From 1 downward,
+    /// and while the value stays under 1, − / + land on [`SLOW_RATE_STOPS`]
+    /// (0.5, 0.25, 0.1). Unlimited stays one press away from 1 Mbps.
     pub fn step(self, current: f64, direction: i32, coarse: bool) -> f64 {
         if matches!(self, Metric::Download | Metric::Upload) && !coarse {
-            // 0 stays a 1 Mbps jump so unlimited → 1 is one press.
-            // Once under 1 Mbps (or stepping down from 1), use 0.1 so 0.5 is reachable.
-            let in_fraction = current > 1e-9 && current < 1.0 - 1e-9;
-            let leaving_one = direction < 0 && current <= 1.0 + 1e-9 && current > 1e-9;
-            if in_fraction || leaving_one {
-                return 0.1;
+            if let Some(delta) = slow_rate_delta(current, direction) {
+                return delta;
             }
         }
         if coarse {
@@ -778,6 +757,38 @@ impl Metric {
     }
 }
 
+/// Delta that lands on the next slow-rate stop, if this press is on that ladder.
+///
+/// `+` from 0 and any press at or above 1 Mbps (except − from exactly 1) stay
+/// on the integer step and return `None`.
+fn slow_rate_delta(current: f64, direction: i32) -> Option<f64> {
+    const EPS: f64 = 1e-6;
+    if direction == 0 || !current.is_finite() {
+        return None;
+    }
+    if direction < 0 {
+        if current > 1.0 + EPS || current <= EPS {
+            return None;
+        }
+        let target = SLOW_RATE_STOPS
+            .iter()
+            .rev()
+            .copied()
+            .find(|stop| current > *stop + EPS)
+            .unwrap_or(0.0);
+        Some(current - target)
+    } else if current > EPS && current < 1.0 - EPS {
+        let target = SLOW_RATE_STOPS
+            .iter()
+            .copied()
+            .find(|stop| current < *stop - EPS)
+            .unwrap_or(1.0);
+        Some(target - current)
+    } else {
+        None
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -787,20 +798,20 @@ mod tests {
         assert_eq!(mbps_to_tc(10.0), "10Mbit");
         assert_eq!(mbps_to_tc(2.5), "2.500Mbit");
         assert_eq!(mbps_to_tc(0.5), "500kbit");
+        assert_eq!(mbps_to_tc(0.25), "250kbit");
         assert_eq!(mbps_to_tc(0.1), "100kbit");
         assert_eq!(tc_rate_to_mbps("10Mbit"), Some(10.0));
         assert_eq!(tc_rate_to_mbps("1Gbit"), Some(1000.0));
         assert_eq!(tc_rate_to_mbps("500Kbit"), Some(0.5));
         assert_eq!(tc_rate_to_mbps("500kbit"), Some(0.5));
+        assert_eq!(tc_rate_to_mbps("250Kbit"), Some(0.25));
         assert_eq!(tc_rate_to_mbps("100Kbit"), Some(0.1));
     }
 
     #[test]
     fn low_rate_htb_tokens() {
         assert!(htb_low_rate_tokens(0.5).is_empty());
-        assert!(htb_low_rate_tokens(0.05)
-            .iter()
-            .any(|s| s == "quantum"));
+        assert!(htb_low_rate_tokens(0.05).iter().any(|s| s == "quantum"));
     }
 
     #[test]
@@ -815,14 +826,38 @@ mod tests {
         assert_eq!(format_value(Metric::Upload, 0.25), "0.25");
     }
 
+    fn after_rate_step(current: f64, direction: i32) -> f64 {
+        let step = Metric::Download.step(current, direction, false);
+        let v = (current + direction as f64 * step).clamp(0.0, Metric::Download.max());
+        (v * 1000.0).round() / 1000.0
+    }
+
     #[test]
     fn fractional_rate_step() {
         assert_eq!(Metric::Download.step(0.0, 1, false), 1.0);
-        assert_eq!(Metric::Download.step(0.5, 1, false), 0.1);
-        assert_eq!(Metric::Download.step(1.0, -1, false), 0.1);
         assert_eq!(Metric::Download.step(1.0, 1, false), 1.0);
         assert_eq!(Metric::Download.step(10.0, 1, false), 1.0);
         assert_eq!(Metric::Download.step(0.5, 1, true), 10.0);
+        assert_eq!(after_rate_step(1.0, -1), 0.5);
+        assert_eq!(after_rate_step(0.5, -1), 0.25);
+        assert_eq!(after_rate_step(0.25, -1), 0.1);
+        assert_eq!(after_rate_step(0.1, -1), 0.0);
+        assert_eq!(after_rate_step(0.1, 1), 0.25);
+        assert_eq!(after_rate_step(0.25, 1), 0.5);
+        assert_eq!(after_rate_step(0.5, 1), 1.0);
+        assert_eq!(after_rate_step(0.3, -1), 0.25);
+        assert_eq!(after_rate_step(0.3, 1), 0.5);
+        assert_eq!(after_rate_step(2.0, -1), 1.0);
+        let up = Metric::Upload.step(0.25, -1, false);
+        assert!((up - 0.15).abs() < 1e-9, "{up}");
+    }
+
+    #[test]
+    fn parse_user_number_accepts_comma() {
+        assert_eq!(parse_user_number("0,5").unwrap(), 0.5);
+        assert_eq!(parse_user_number("0.25").unwrap(), 0.25);
+        assert_eq!(parse_user_number("0,1").unwrap(), 0.1);
+        assert!(parse_user_number("nope").is_err());
     }
 
     #[test]

@@ -196,11 +196,7 @@ impl PingMonitor {
                     }
                     Ok(o) => {
                         let e = String::from_utf8_lossy(&o.stderr).trim().to_string();
-                        (
-                            false,
-                            None,
-                            if e.is_empty() { None } else { Some(e) },
-                        )
+                        (false, None, if e.is_empty() { None } else { Some(e) })
                     }
                     Err(e) => (false, None, Some(format!("ping: {e}"))),
                 };

@@ -9,7 +9,7 @@ use crate::history;
 use crate::netinfo::{interface_state, list_interfaces};
 use crate::presets::{self, all_presets};
 use crate::speedtest::{self, SampleKind, SpeedTestEvent, TestScope};
-use crate::tc::{is_root, format_loss, format_ms, format_rate, Limits, TrafficController};
+use crate::tc::{format_loss, format_ms, format_rate, is_root, Limits, TrafficController};
 
 /// NetLimit — shape and measure Linux network traffic.
 #[derive(Debug, Parser)]
@@ -23,7 +23,7 @@ With no subcommand, opens the interactive TUI.\n\n\
 Examples:\n  \
   sudo netlimit\n  \
   sudo netlimit apply --download 10 --upload 2 --loss 1\n  \
-  sudo netlimit apply --download 0.5 --upload 0.5\n  \
+  sudo netlimit apply --download 0.5 --upload 0.25\n  \
   sudo netlimit apply --preset 4G\n  \
   sudo netlimit reset\n  \
   netlimit status\n  \
@@ -54,24 +54,24 @@ pub enum Commands {
 
     /// Apply traffic limits (requires root)
     Apply {
-        /// Download limit in Mbps (0 = unlimited; fractions allowed, e.g. 0.5)
-        #[arg(long, short = 'd', value_name = "MBPS")]
+        /// Download limit in Mbps (0 = unlimited; 0.5, 0.25, and 0.1 allowed)
+        #[arg(long, short = 'd', value_name = "MBPS", value_parser = crate::tc::parse_user_number)]
         download: Option<f64>,
 
-        /// Upload limit in Mbps (0 = unlimited; fractions allowed, e.g. 0.5)
-        #[arg(long, short = 'u', value_name = "MBPS")]
+        /// Upload limit in Mbps (0 = unlimited; 0.5, 0.25, and 0.1 allowed)
+        #[arg(long, short = 'u', value_name = "MBPS", value_parser = crate::tc::parse_user_number)]
         upload: Option<f64>,
 
         /// Packet loss percent (0–100)
-        #[arg(long, short = 'l', value_name = "PERCENT")]
+        #[arg(long, short = 'l', value_name = "PERCENT", value_parser = crate::tc::parse_user_number)]
         loss: Option<f64>,
 
         /// Base delay in milliseconds
-        #[arg(long, value_name = "MS")]
+        #[arg(long, value_name = "MS", value_parser = crate::tc::parse_user_number)]
         delay: Option<f64>,
 
         /// Jitter (delay variation) in milliseconds
-        #[arg(long, short = 'j', value_name = "MS")]
+        #[arg(long, short = 'j', value_name = "MS", value_parser = crate::tc::parse_user_number)]
         jitter: Option<f64>,
 
         /// Load a named preset (overridable by the flags above)
@@ -257,10 +257,7 @@ fn cmd_apply(
             .find(|p| p.name.eq_ignore_ascii_case(name));
         let Some(p) = found else {
             let names: Vec<_> = all_presets().iter().map(|p| p.name.clone()).collect();
-            anyhow::bail!(
-                "unknown preset {name:?}. Available: {}",
-                names.join(", ")
-            );
+            anyhow::bail!("unknown preset {name:?}. Available: {}", names.join(", "));
         };
         limits.download_mbps = p.download_mbps;
         limits.upload_mbps = p.upload_mbps;
@@ -299,9 +296,7 @@ fn cmd_apply(
 
     let ctrl = controller(interface)?;
     limits.interface = ctrl.interface.clone();
-    let applied = ctrl
-        .apply(limits)
-        .map_err(|e| anyhow::anyhow!("{e}"))?;
+    let applied = ctrl.apply(limits).map_err(|e| anyhow::anyhow!("{e}"))?;
 
     if json {
         println!("{}", serde_json::to_string_pretty(&applied)?);
@@ -388,7 +383,11 @@ fn cmd_interfaces(json: bool) -> anyhow::Result<()> {
     println!("{:<16} {:<8} {}", "INTERFACE", "STATE", "NOTES");
     for name in &ifaces {
         let state = interface_state(name);
-        let note = if *name == default { "default route" } else { "" };
+        let note = if *name == default {
+            "default route"
+        } else {
+            ""
+        };
         println!("{name:<16} {state:<8} {note}");
     }
     Ok(())
@@ -409,19 +408,11 @@ fn cmd_presets(json: bool) -> anyhow::Result<()> {
         let kind = if p.builtin { "builtin" } else { "custom" };
         println!("{:<14} {:<28} {kind}", p.name, p.summary());
     }
-    println!(
-        "\nConfig: {}",
-        presets::presets_path().display()
-    );
+    println!("\nConfig: {}", presets::presets_path().display());
     Ok(())
 }
 
-fn cmd_speedtest(
-    duration: u32,
-    scope: TestScope,
-    quiet: bool,
-    json: bool,
-) -> anyhow::Result<()> {
+fn cmd_speedtest(duration: u32, scope: TestScope, quiet: bool, json: bool) -> anyhow::Result<()> {
     let duration = duration.clamp(1, 120);
     if !quiet && !json {
         eprintln!(

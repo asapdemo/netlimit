@@ -194,8 +194,8 @@ Layout (top to bottom):
 
 | Control | Unit | Meaning |
 |---------|------|---------|
-| **↓ Download** | Mbps | Max download (0 = unlimited; fractions such as 0.5 allowed) |
-| **↑ Upload** | Mbps | Max upload (0 = unlimited; fractions such as 0.5 allowed) |
+| **↓ Download** | Mbps | Max download (0 = unlimited; 0.5, 0.25, and 0.1 allowed) |
+| **↑ Upload** | Mbps | Max upload (0 = unlimited; 0.5, 0.25, and 0.1 allowed) |
 | **⚠ Loss** | % | Packet loss |
 | **⏱ Delay** | ms | Base latency |
 | **∿ Jitter** | ms | Latency variation |
@@ -203,7 +203,7 @@ Layout (top to bottom):
 Values in the UI are a **draft** until you **Apply**.  
 The **Current applied limits** panel shows what is actually on the wire.
 
-Fractional Mbps is allowed (for example **0.5**). Select Download or Upload and press **e** or **Enter**, type the number, then **Enter** again. From unlimited, `+` still jumps to 1 Mbps. Once the value is under 1 Mbps — or when you step down from 1 — `−` / `+` moves by **0.1**. At 1 Mbps and above the step stays **1** (`Shift` = 10). The same values work on the CLI: `sudo netlimit apply --download 0.5`.
+Fractional Mbps is allowed. Select Download or Upload and press **e** or **Enter**, type the number (a comma works as the decimal separator), then **Enter** again. From unlimited, `+` still jumps to 1 Mbps. The next `−` stops at **0.5**, then **0.25**, then **0.1**, and one more `−` clears the limit. `+` from those values climbs back up the same stops. At 1 Mbps and above the step stays **1** (`Shift` = 10). The same values work on the CLI: `sudo netlimit apply --download 0.25 --upload 0.1`.
 
 ---
 
@@ -280,7 +280,7 @@ Press **`h`** or **Hist**.
 | Key | Action |
 |-----|--------|
 | `↑` `↓` `Tab` | Select metric |
-| `←` `→` `+` `−` | Adjust (0.1 Mbps while under 1, else 1) |
+| `←` `→` `+` `−` | Adjust (below 1 Mbps: 0.5, then 0.25, then 0.1; otherwise 1) |
 | `e` / `Enter` | Type a value (e.g. `0.5`); `Esc` cancels |
 | `Shift` + adjust | Larger step |
 | `d` `u` `l` `y` `j` | Focus Download / Upload / Loss / Delay / Jitter |

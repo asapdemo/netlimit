@@ -176,7 +176,7 @@ impl App {
                 ..Default::default()
             },
             banner: Banner {
-                message: "Ready — −/+ , e to type a rate (e.g. 0.5 Mbps), or presets".into(),
+                message: "Ready — below 1 Mbps, −/+ stops at 0.5, 0.25, 0.1 · e to type".into(),
                 level: BannerLevel::Info,
             },
             is_root: is_root(),
@@ -444,11 +444,11 @@ impl App {
                 result.down_samples = self.st_down_samples.clone();
             }
             if !self.st_up_samples.is_empty() {
-                result.upload_mbps = self
-                    .st_up_samples
-                    .iter()
-                    .copied()
-                    .fold(0.0_f64, |a, b| if b > a { b } else { a });
+                result.upload_mbps =
+                    self.st_up_samples
+                        .iter()
+                        .copied()
+                        .fold(0.0_f64, |a, b| if b > a { b } else { a });
                 result.up_samples = self.st_up_samples.clone();
             }
             if !self.st_lat_samples.is_empty() {
@@ -458,8 +458,8 @@ impl App {
                 result.latency_ms = sorted[mid];
                 if sorted.len() >= 2 {
                     let mean = sorted.iter().sum::<f64>() / sorted.len() as f64;
-                    let var =
-                        sorted.iter().map(|x| (x - mean).powi(2)).sum::<f64>() / sorted.len() as f64;
+                    let var = sorted.iter().map(|x| (x - mean).powi(2)).sum::<f64>()
+                        / sorted.len() as f64;
                     result.jitter_ms = var.sqrt();
                 }
                 result.lat_samples = self.st_lat_samples.clone();
@@ -638,7 +638,7 @@ impl App {
             );
         } else {
             self.set_banner(
-                "Ready — −/+ , e to type a rate (e.g. 0.5 Mbps), or presets",
+                "Ready — below 1 Mbps, −/+ stops at 0.5, 0.25, 0.1 · e to type",
                 BannerLevel::Info,
             );
         }
@@ -727,8 +727,7 @@ impl App {
                 self.delete_selected_preset();
             }
             KeyCode::Up | KeyCode::BackTab => {
-                self.selected =
-                    Metric::from_index(self.selected.index() + Metric::ALL.len() - 1);
+                self.selected = Metric::from_index(self.selected.index() + Metric::ALL.len() - 1);
             }
             KeyCode::Down | KeyCode::Tab => {
                 self.selected = Metric::from_index(self.selected.index() + 1);
@@ -944,7 +943,7 @@ impl App {
         self.editing = Some(m);
         self.set_banner(
             format!(
-                "Type {} ({}) — e.g. 0.5 · Enter save · Esc cancel · empty = 0",
+                "Type {} ({}) — 0.5, 0.25, 0.1 · Enter save · Esc cancel · empty = 0",
                 m.label(),
                 m.unit()
             ),
@@ -957,14 +956,11 @@ impl App {
         let Some(metric) = self.editing else {
             return true;
         };
-        let raw = self.edit_buf.trim().to_string();
+        let raw = self.edit_buf.trim().replace(',', ".");
         if raw.is_empty() || raw == "." {
             self.set_metric_value(metric, 0.0);
             self.cancel_edit();
-            self.set_banner(
-                format!("{} cleared (0)", metric.label()),
-                BannerLevel::Info,
-            );
+            self.set_banner(format!("{} cleared (0)", metric.label()), BannerLevel::Info);
             return true;
         }
         match raw.parse::<f64>() {
@@ -1013,7 +1009,8 @@ impl App {
             KeyCode::Backspace => {
                 self.edit_buf.pop();
             }
-            KeyCode::Char(c) if c.is_ascii_digit() || c == '.' => {
+            KeyCode::Char(c) if c.is_ascii_digit() || c == '.' || c == ',' => {
+                let c = if c == ',' { '.' } else { c };
                 if c == '.' && self.edit_buf.contains('.') {
                     return;
                 }
@@ -1114,7 +1111,10 @@ impl App {
                 self.set_banner(format!("Deleted preset “{name}”"), BannerLevel::Success);
             }
             Err(e) => {
-                self.set_banner(format!("Deleted in UI but failed to save: {e}"), BannerLevel::Error);
+                self.set_banner(
+                    format!("Deleted in UI but failed to save: {e}"),
+                    BannerLevel::Error,
+                );
             }
         }
     }
