@@ -1,5 +1,7 @@
 //! Application state and event handling.
 
+
+
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Receiver;
 use std::sync::Arc;
